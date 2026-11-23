@@ -10,6 +10,7 @@ import json
 import time
 import subprocess
 import urllib.request
+import urllib.parse
 from datetime import datetime
 
 from config import (
@@ -167,7 +168,7 @@ def parse_post_intelligence(text: str) -> dict:
     }
 
 def fetch_web_post(url: str) -> tuple[str, list[str]]:
-    """Fetches web post text and emails using requests or Playwright fallback."""
+    """Fetches web post text and emails with DOM expansion, mailto extraction & urllib fallback."""
     print(f"[Engine] Fetching Web URL: {url}")
     post_text = ""
     emails = []
@@ -175,25 +176,60 @@ def fetch_web_post(url: str) -> tuple[str, list[str]]:
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-            page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0")
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800}
+            )
             page.goto(url, wait_until="domcontentloaded", timeout=35000)
             time.sleep(2)
+
+            # 1. Expand "see more" / "...more" if present
+            try:
+                see_more = page.query_selector("button.feed-shared-inline-show-more-text__see-more-less-toggle, button.see-more, button[aria-label*='more']")
+                if see_more:
+                    see_more.click(timeout=3000)
+                    time.sleep(1)
+            except Exception:
+                pass
+
+            # 2. Extract DOM text
             elem = page.query_selector("main") or page.query_selector("article") or page.query_selector("body")
             if elem:
                 post_text = elem.inner_text() or ""
-            emails.extend(extract_emails(post_text))
+
+            # 3. Extract raw HTML & unquote mailto links
+            raw_html = page.content() or ""
+            unquoted_html = urllib.parse.unquote(raw_html)
+            mailtos = re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', unquoted_html, re.IGNORECASE)
+            for m in mailtos:
+                clean_m = m.lower().strip()
+                if clean_m not in emails and not any(junk in clean_m for junk in ["example.com", "w3.org", "sentry.io"]):
+                    emails.append(clean_m)
+
             browser.close()
     except Exception as e:
         print(f"[Playwright Notice]: {e}. Attempting urllib fetch.")
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
             with urllib.request.urlopen(req, timeout=15) as resp:
                 raw_html = resp.read().decode('utf-8', errors='ignore')
+                unquoted_html = urllib.parse.unquote(raw_html)
+                mailtos = re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', unquoted_html, re.IGNORECASE)
+                for m in mailtos:
+                    clean_m = m.lower().strip()
+                    if clean_m not in emails and not any(junk in clean_m for junk in ["example.com", "w3.org", "sentry.io"]):
+                        emails.append(clean_m)
                 post_text = re.sub(r'<[^>]+>', ' ', raw_html)
-                emails.extend(extract_emails(post_text))
         except Exception as e2:
             print(f"[Urllib Fetch Error]: {e2}")
+
+    for em in extract_emails(post_text):
+        if em not in emails:
+            emails.append(em)
 
     return post_text, emails
 

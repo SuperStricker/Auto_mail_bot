@@ -1,6 +1,11 @@
 """
-Enhanced OCR Engine for Job Flyers & Screenshot Images
-Performs multi-pass OCR and regex-based email extraction with artifact healing.
+Enhanced Universal OCR & Email Extraction Engine
+Supports:
+  - Universal Email Emojis (📧, ✉️, 📩, 📮, 📨, 📬, etc.)
+  - Diverse Recruiter Phrases ('share your resume here', 'update your CV at', 'drop your profile to', 'email:', 'gmail:', etc.)
+  - Glued TLD Splitting (.comRepeatedEmail, .comWord, .com#Tag)
+  - All Corporate & Custom Domains (.com, .ae, .sa, .in, .co.in, .org, .net, .tech, .io, etc.)
+  - Multi-pass Windows native OCR & Linux pytesseract fallback
 """
 
 import os
@@ -22,17 +27,29 @@ except ImportError:
     pytesseract = None
     HAS_PYTESSERACT = False
 
-EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
+EMAIL_EMOJIS = ['📧', '✉️', '📩', '📮', '📨', '📬', '📫', '📪', '💌', '👉', '📍', '📌', '🔗', '📞', '☎️']
+
+COMMON_TLDS = [
+    'com', 'in', 'org', 'net', 'co', 'io', 'ae', 'sa', 'uk', 'us', 'me', 'edu', 'gov',
+    'tech', 'ai', 'info', 'biz', 'global', 'agency', 'careers', 'co.in', 'co.ae', 'com.sa'
+]
+
+TLD_REGEX = '|'.join([re.escape(t) for t in sorted(COMMON_TLDS, key=len, reverse=True)])
+
+# Universal email matcher bounded by authentic TLDs
+EMAIL_REGEX = re.compile(rf'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?:{TLD_REGEX})\b', re.IGNORECASE)
 
 JUNK_EMAILS = [
     'example.com', 'sample.com', 'test.com', 'domain.com', 'email.com',
     'yourcompany.com', 'xyz.com', 'abc.com', 'mail.com', 'sentry.io', 'w3.org'
 ]
 
-COMMON_TLDS = ['com', 'in', 'org', 'net', 'co', 'io', 'ae', 'sa', 'uk', 'us', 'me', 'edu', 'gov', 'tech', 'ai', 'info', 'biz', 'global', 'agency', 'careers', 'co.in', 'co.ae']
-
 RECRUITER_INTENT_PATTERN = re.compile(
-    r'(?:share|send|drop|forward|mail|email|submit|reach\s*out|apply)\s+(?:your\s+)?(?:updated\s+)?(?:resume|resumes|cv|profile|profiles|application|details)?\s*(?:at|to|on|in|via|email|id)?\s*[:\-–]?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})',
+    r'(?:share|send|drop|forward|mail|email|submit|reach\s*out|apply|ping|connect|write|update)\s+'
+    r'(?:your\s+)?(?:updated\s+)?(?:resume|resumes|cv|cvs|profile|profiles|application|details)?\s*'
+    r'(?:at|to|on|in|via|email|id|here|below)?\s*[:\-–]?\s*'
+    r'(?:[A-Za-z\s]{0,35}[:\-–])?\s*'
+    rf'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?:{TLD_REGEX})\b)',
     re.IGNORECASE
 )
 
@@ -41,40 +58,52 @@ def extract_emails(text: str) -> list[str]:
     if not text:
         return []
 
-    # 1. Obfuscation replacements (only explicit brackets like [at], (at), [dot], (dot))
-    clean_text = re.sub(r'\s*\[at\]\s*|\s*\(at\)\s*', '@', text, flags=re.IGNORECASE)
+    clean_text = str(text)
+
+    # 1. Normalize Email Emojis to a clean textual intent marker
+    for em in EMAIL_EMOJIS:
+        if em in clean_text:
+            clean_text = clean_text.replace(em, ' EMAIL_INTENT: ')
+
+    # 2. Obfuscation replacements (explicit bracket formats only)
+    clean_text = re.sub(r'\s*\[at\]\s*|\s*\(at\)\s*', '@', clean_text, flags=re.IGNORECASE)
     clean_text = re.sub(r'\s*\[dot\]\s*|\s*\(dot\)\s*', '.', clean_text, flags=re.IGNORECASE)
 
-    # 2. Heal spaces around @ and dots (e.g. hr @ mycompany . com -> hr@mycompany.com)
+    # 3. Heal spaces around @ and dots (e.g. hr @ mycompany . com -> hr@mycompany.com)
     clean_text = re.sub(r'([a-zA-Z0-9._%+-]+)\s*@\s*([a-zA-Z0-9._-]+)\s*\.\s*([a-zA-Z]{2,})', r'\1@\2.\3', clean_text)
     clean_text = re.sub(r'([a-zA-Z0-9._%+-]+)\s*@\s*([a-zA-Z0-9._-]+)', r'\1@\2', clean_text)
 
-    # 3. Fix common OCR mistakes for .com (e.g. 0.0m, corn, con)
+    # 4. Split glued words / LinkedIn repeated link artifacts after TLDs
+    for tld in ['com', 'co.in', 'in', 'org', 'net', 'ae', 'sa', 'io', 'tech', 'ai', 'global']:
+        clean_text = re.sub(rf'(\.{re.escape(tld)})([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+)', r'\1 \2', clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(rf'(\.{re.escape(tld)})([A-Z][a-z]+)', r'\1 \2', clean_text)
+        clean_text = re.sub(rf'(\.{re.escape(tld)})(#)', r'\1 \2', clean_text)
+
+    # 5. Fix common OCR mistakes for .com (e.g. 0.0m, corn, con)
     clean_text = re.sub(r'(@[a-zA-Z0-9._-]+)\s*(?:[0o]\.[0o]m|c[0o]rn|c[0o]n)\b', r'\1.com', clean_text, flags=re.IGNORECASE)
 
-    # 4. Fix missing dots with spaces before common TLDs: @domain com -> @domain.com
+    # 6. Fix missing dots with spaces before common TLDs: @domain com -> @domain.com
     for tld in ['com', 'in', 'org', 'net', 'ae', 'sa', 'co']:
         clean_text = re.sub(rf'(@[a-zA-Z0-9._-]+)\s+{tld}\b', rf'\1.{tld}', clean_text, flags=re.IGNORECASE)
 
-    # 5. Fix common glued missing dot specifically for top mail providers e.g. @gmailcom -> @gmail.com
-    clean_text = re.sub(r'(@[a-zA-Z0-9._-]+)(gmail|yahoo|outlook|hotmail|rediffmail)com\b', r'\1\2.com', clean_text, flags=re.IGNORECASE)
-
-    # 6. Fix common letter substitutions in domain names
+    # 7. Fix common letter substitutions in domain names
     clean_text = re.sub(r'-(?:cocp|c0rp)\.com', '-corp.com', clean_text, flags=re.IGNORECASE)
     clean_text = re.sub(r'@qgoft-', '@qsoft-', clean_text, flags=re.IGNORECASE)
 
-    # Prioritize recruiter intent matches (e.g. "share updated resumes at: hr@company.com")
+    # 8. Extract intent-ranked emails first
     intent_matches = [m.lower().strip().rstrip('.,;:') for m in RECRUITER_INTENT_PATTERN.findall(clean_text)]
 
-    matches = EMAIL_REGEX.findall(clean_text)
+    # 9. Extract all standard email matches
+    all_matches = EMAIL_REGEX.findall(clean_text)
+
     valid_emails = []
 
-    # Insert intent matches first
+    # Insert intent-ranked matches at the very top
     for em in intent_matches:
         if em not in valid_emails:
             valid_emails.append(em)
 
-    for email in matches:
+    for email in all_matches:
         email_clean = email.lower().strip().rstrip('.,;:')
         domain = email_clean.split('@')[-1]
 
@@ -121,6 +150,7 @@ async def extract_text_from_image_async(image_path: str) -> str:
 
 def extract_from_image(image_path: str) -> tuple[str, list[str]]:
     """Synchronous wrapper for image text and email extraction."""
+    text = ""
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():

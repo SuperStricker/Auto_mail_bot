@@ -29,37 +29,50 @@ JUNK_EMAILS = [
     'yourcompany.com', 'xyz.com', 'abc.com', 'mail.com', 'sentry.io', 'w3.org'
 ]
 
-COMMON_TLDS = ['com', 'in', 'org', 'net', 'co', 'io', 'ae', 'sa', 'uk', 'us', 'me', 'edu', 'gov']
+COMMON_TLDS = ['com', 'in', 'org', 'net', 'co', 'io', 'ae', 'sa', 'uk', 'us', 'me', 'edu', 'gov', 'tech', 'ai', 'info', 'biz', 'global', 'agency', 'careers', 'co.in', 'co.ae']
+
+RECRUITER_INTENT_PATTERN = re.compile(
+    r'(?:share|send|drop|forward|mail|email|submit|reach\s*out|apply)\s+(?:your\s+)?(?:updated\s+)?(?:resume|resumes|cv|profile|profiles|application|details)?\s*(?:at|to|on|in|via|email|id)?\s*[:\-–]?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})',
+    re.IGNORECASE
+)
 
 def extract_emails(text: str) -> list[str]:
-    """Finds valid email addresses from text with strict anti-junk and OCR-healing rules."""
+    """Finds valid email addresses from text with strict anti-junk, corporate domain support, and OCR-healing rules."""
     if not text:
         return []
 
-    # 1. Obfuscation replacements
+    # 1. Obfuscation replacements (only explicit brackets like [at], (at), [dot], (dot))
     clean_text = re.sub(r'\s*\[at\]\s*|\s*\(at\)\s*', '@', text, flags=re.IGNORECASE)
-    clean_text = re.sub(r'(?<=[a-zA-Z0-9._%+-])\s+at\s+(?=[a-zA-Z0-9-]+\.[a-zA-Z]{2,})', '@', clean_text, flags=re.IGNORECASE)
     clean_text = re.sub(r'\s*\[dot\]\s*|\s*\(dot\)\s*', '.', clean_text, flags=re.IGNORECASE)
-    clean_text = re.sub(r'(?<=[a-zA-Z0-9._%+-])\s+dot\s+(?=[a-zA-Z]{2,})', '.', clean_text, flags=re.IGNORECASE)
 
-    # 2. Fix common OCR mistakes for .com (e.g. 0.0m, corn, con)
+    # 2. Heal spaces around @ and dots (e.g. hr @ mycompany . com -> hr@mycompany.com)
+    clean_text = re.sub(r'([a-zA-Z0-9._%+-]+)\s*@\s*([a-zA-Z0-9._-]+)\s*\.\s*([a-zA-Z]{2,})', r'\1@\2.\3', clean_text)
+    clean_text = re.sub(r'([a-zA-Z0-9._%+-]+)\s*@\s*([a-zA-Z0-9._-]+)', r'\1@\2', clean_text)
+
+    # 3. Fix common OCR mistakes for .com (e.g. 0.0m, corn, con)
     clean_text = re.sub(r'(@[a-zA-Z0-9._-]+)\s*(?:[0o]\.[0o]m|c[0o]rn|c[0o]n)\b', r'\1.com', clean_text, flags=re.IGNORECASE)
 
-    # 3. Fix missing dots with spaces before common TLDs: @domain com -> @domain.com
-    for tld in COMMON_TLDS:
+    # 4. Fix missing dots with spaces before common TLDs: @domain com -> @domain.com
+    for tld in ['com', 'in', 'org', 'net', 'ae', 'sa', 'co']:
         clean_text = re.sub(rf'(@[a-zA-Z0-9._-]+)\s+{tld}\b', rf'\1.{tld}', clean_text, flags=re.IGNORECASE)
-        clean_text = re.sub(rf'(@[a-zA-Z0-9._-]+)\s*\.\s*{tld}\b', rf'\1.{tld}', clean_text, flags=re.IGNORECASE)
 
-    # 4. Fix missing dots directly attached before common TLDs: @domaincom -> @domain.com
-    for tld in COMMON_TLDS:
-        clean_text = re.sub(rf'(@[a-zA-Z0-9_-]{{3,}})({tld})\b', rf'\1.{tld}', clean_text, flags=re.IGNORECASE)
+    # 5. Fix common glued missing dot specifically for top mail providers e.g. @gmailcom -> @gmail.com
+    clean_text = re.sub(r'(@[a-zA-Z0-9._-]+)(gmail|yahoo|outlook|hotmail|rediffmail)com\b', r'\1\2.com', clean_text, flags=re.IGNORECASE)
 
-    # 5. Fix common letter substitutions in domain names
+    # 6. Fix common letter substitutions in domain names
     clean_text = re.sub(r'-(?:cocp|c0rp)\.com', '-corp.com', clean_text, flags=re.IGNORECASE)
     clean_text = re.sub(r'@qgoft-', '@qsoft-', clean_text, flags=re.IGNORECASE)
 
+    # Prioritize recruiter intent matches (e.g. "share updated resumes at: hr@company.com")
+    intent_matches = [m.lower().strip().rstrip('.,;:') for m in RECRUITER_INTENT_PATTERN.findall(clean_text)]
+
     matches = EMAIL_REGEX.findall(clean_text)
     valid_emails = []
+
+    # Insert intent matches first
+    for em in intent_matches:
+        if em not in valid_emails:
+            valid_emails.append(em)
 
     for email in matches:
         email_clean = email.lower().strip().rstrip('.,;:')

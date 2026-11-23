@@ -15,6 +15,13 @@ except ImportError:
     winocr = None
     HAS_WINOCR = False
 
+try:
+    import pytesseract
+    HAS_PYTESSERACT = True
+except ImportError:
+    pytesseract = None
+    HAS_PYTESSERACT = False
+
 EMAIL_REGEX = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
 
 JUNK_EMAILS = [
@@ -112,6 +119,21 @@ def extract_from_image(image_path: str) -> tuple[str, list[str]]:
     except Exception as e:
         print(f"[OCR Runner Error]: {e}")
         text = ""
+
+    # Fallback to pytesseract (especially for Linux/GitHub Actions runners)
+    if not text and HAS_PYTESSERACT and pytesseract and os.path.exists(image_path):
+        try:
+            img = Image.open(image_path)
+            text = pytesseract.image_to_string(img)
+            # Enhanced pass
+            w, h = img.size
+            scaled = img.convert('L').resize((w * 2, h * 2), Image.Resampling.LANCZOS)
+            enh = ImageEnhance.Contrast(scaled)
+            contrasted = enh.enhance(1.8)
+            text2 = pytesseract.image_to_string(contrasted)
+            text = f"{text}\n{text2}"
+        except Exception as e_tess:
+            print(f"[Pytesseract Error]: {e_tess}")
 
     emails = extract_emails(text)
     return text, emails

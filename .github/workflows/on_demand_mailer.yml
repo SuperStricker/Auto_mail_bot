@@ -1,0 +1,59 @@
+name: On-Demand Job Auto-Mailer (Event-Triggered)
+
+on:
+  # 1. Triggered automatically by Telegram message via Cloudflare bridge
+  repository_dispatch:
+    types: [telegram_job]
+
+  # 2. Can also be triggered manually anytime via GitHub web/mobile app
+  workflow_dispatch:
+    inputs:
+      job_text_or_url:
+        description: 'Paste LinkedIn Job URL or copied text'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  apply-and-exit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5 # Maximum safety guard, normally finishes in 25-40 seconds!
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install System OCR & Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytesseract
+
+      - name: Install Playwright Browsers (for web post parsing)
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Process Single Application & Send Email
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # If triggered via manual workflow_dispatch
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python on_demand_worker.py --text "${{ github.event.inputs.job_text_or_url }}"
+          else
+            # Triggered via repository_dispatch from Telegram
+            python on_demand_worker.py --payload '${{ toJson(github.event.client_payload) }}'
+          fi

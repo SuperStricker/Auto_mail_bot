@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+temp_images/*
+logs/*
+.env
+sent_history.json
+.vscode/
+.idea/

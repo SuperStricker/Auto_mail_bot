@@ -24,7 +24,7 @@ permissions:
 jobs:
   apply-and-exit:
     runs-on: ubuntu-latest
-    timeout-minutes: 5 # Maximum safety guard, normally finishes in 25-40 seconds!
+    timeout-minutes: 5 # Maximum safety guard, normally finishes in 25-45 seconds!
 
     steps:
       - name: Checkout Code
@@ -42,9 +42,8 @@ jobs:
           sudo apt-get install -y -qq tesseract-ocr
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytesseract
 
-      - name: Install Playwright Browsers (for web post parsing)
+      - name: Install Playwright Browsers (for web post & flyer parsing)
         run: |
           python -m playwright install --with-deps chromium
 
@@ -54,11 +53,14 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LINKEDIN_LI_AT: ${{ secrets.LINKEDIN_LI_AT }}
+          PAYLOAD_JSON: ${{ toJson(github.event.client_payload) }}
+          JOB_TEXT_OR_URL: ${{ github.event.inputs.job_text_or_url }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.job_text_or_url }}" ]; then
-            python on_demand_worker.py --text "${{ github.event.inputs.job_text_or_url }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$JOB_TEXT_OR_URL" ]; then
+            python on_demand_worker.py
           elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            python on_demand_worker.py --payload '${{ toJson(github.event.client_payload) }}'
+            python on_demand_worker.py
           else
             python on_demand_worker.py --poll
           fi

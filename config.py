@@ -36,6 +36,7 @@ GMAIL_PASS = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 AUTHORIZED_CHAT_ID = str(os.environ.get("TELEGRAM_CHAT_ID", "1229206599"))
+LINKEDIN_LI_AT = os.environ.get("LINKEDIN_LI_AT", "").strip()
 
 API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}"

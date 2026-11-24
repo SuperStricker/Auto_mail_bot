@@ -6,3 +6,5 @@ logs/*
 sent_history.json
 .vscode/
 .idea/
+wrangler.toml
+.wrangler/

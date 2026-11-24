@@ -1,6 +1,6 @@
 """
 Universal Application Engine
-Parses links, flyers/photos, and pasted text.
+Parses links (including attached flyer images via OCR), flyers/photos, and pasted text.
 Extracts job metadata, selects CV, and triggers cold email dispatch.
 """
 
@@ -8,13 +8,14 @@ import os
 import re
 import json
 import time
+import html as html_lib
 import subprocess
 import urllib.request
 import urllib.parse
 from datetime import datetime
 
 from config import (
-    BASE_DIR, TEMP_DIR, SENT_HISTORY_FILE, ASK_FREELLM_TOOL
+    BASE_DIR, TEMP_DIR, SENT_HISTORY_FILE, ASK_FREELLM_TOOL, LINKEDIN_LI_AT
 )
 from ocr_engine import extract_from_image, extract_emails
 from email_sender import (
@@ -23,11 +24,15 @@ from email_sender import (
 )
 
 JUNK_ROLE_WORDS = {
-    "alert", "hiring", "urgent", "hiring alert", "job alert", "urgent hiring", 
+    "alert", "hiring", "urgent", "hiring alert", "job alert", "urgent hiring",
     "immediate", "opening", "vacancy", "requirement", "opportunity", "we are hiring",
     "looking for", "role", "position", "designation", "job", "update", "notice",
     "location", "company", "null", "none"
 }
+
+LINKEDIN_LOGIN_MARKERS = (
+    "/signup/cold-join", "/uas/login", "/login", "/authwall", "join linkedin now"
+)
 
 def extract_company_from_domain(email: str) -> str:
     """Extracts a clean company name from recruiter email domain if not generic."""
@@ -37,7 +42,7 @@ def extract_company_from_domain(email: str) -> str:
     generic = ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "rediffmail.com", "icloud.com", "protonmail.com", "zoho.com"]
     if domain in generic:
         return ""
-    base = re.sub(r'\.(com|co\.[a-z]{2}|[a-z]{2,3}|org|net)$', '', domain)
+    base = re.sub(r'\.(com|co\.[a-z]{2}|com\.[a-z]{2}|[a-z]{2,3}|org|net|io|ai|cloud|dev|systems|solutions|services)$', '', domain)
     parts = re.split(r'[-_.]', base)
     clean_parts = [p.capitalize() for p in parts if p and p.lower() not in ["pvt", "ltd", "corp", "inc"]]
     return " ".join(clean_parts)
@@ -45,23 +50,27 @@ def extract_company_from_domain(email: str) -> str:
 def sanitize_job_role(raw_role: str, text: str = "") -> str:
     """Sanitizes extracted role, strips junk buzzwords, and ensures genuine IT designation."""
     clean = (raw_role or "").strip()
-    clean = re.sub(r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|hiring|alert|urgent)\s*[:|–-]?\s*', '', clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|we\'re\s+hiring|hiring|alert|urgent)\s*[:|–—-]?\s*', '', clean, flags=re.IGNORECASE).strip()
     clean = re.sub(r'\s*\((?:ksa|india|uae|dubai|delhi|ncr|mumbai|pune|bangalore|[a-z\s]+)\)\s*$', '', clean, flags=re.IGNORECASE).strip()
     clean = re.sub(r'\s*\d+\s*(?:content|pm|am|followers|kb|mb)?.*$', '', clean, flags=re.IGNORECASE).strip()
 
     if not clean or clean.lower() in JUNK_ROLE_WORDS or len(clean) < 3:
         clean = ""
 
-    if "|" in clean or "–" in clean or "-" in clean:
-        parts = re.split(r'[:|–-]', clean)
-        for p in parts:
-            p_strip = p.strip()
-            if p_strip.lower() not in JUNK_ROLE_WORDS and len(p_strip) >= 3:
-                clean = p_strip
-                break
+    if "|" in clean or "–" in clean or "-" in clean or "—" in clean:
+        parts = [p.strip() for p in re.split(r'[:|–—-]', clean) if p.strip()]
+        # Preserve level prefixes like 'L3 - IT Infrastructure & Support Engineer'
+        if len(parts) >= 2 and re.fullmatch(r'L[1-3]', parts[0], re.IGNORECASE) and parts[1].lower() not in JUNK_ROLE_WORDS:
+            clean = f"{parts[0].upper()} - {parts[1]}"
+        else:
+            for p_strip in parts:
+                if p_strip.lower() not in JUNK_ROLE_WORDS and len(p_strip) >= 3:
+                    clean = p_strip
+                    break
 
     if not clean or clean.lower() in JUNK_ROLE_WORDS:
         known_roles = [
+            (r'\bl[1-3]\s*[-–]?\s*it\s+infrastructure(?:\s*&\s*support)?\s*(?:engineer|lead|specialist)?\b', 'IT Infrastructure & Support Engineer'),
             (r'\bit\s+executive\b', 'IT Executive'),
             (r'\bit\s+head\b', 'IT Head'),
             (r'\bservice\s+delivery\s+manager\b', 'Service Delivery Manager'),
@@ -128,14 +137,18 @@ def parse_post_intelligence(text: str) -> dict:
             pass
 
     if not role or role.lower() in JUNK_ROLE_WORDS:
-        pre_cleaned = re.sub(r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|hiring|alert|urgent)\s*[:|–-]?\s*', '', clean_text, flags=re.IGNORECASE)
-        m_role = re.search(r'(?:WE ARE HIRING|WE\'RE HIRING|HIRING|URGENT HIRING|LOOKING FOR|ROLE|POSITION|OPENING FOR|DESIGNATION)\s*[:|–-]?\s*([A-Za-z0-9 /&+().-]{3,50})', pre_cleaned, re.IGNORECASE)
+        pre_cleaned = re.sub(r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|hiring|alert|urgent)\s*[:|–—-]?\s*', '', clean_text, flags=re.IGNORECASE)
+        m_role = re.search(r'(?:WE ARE HIRING|WE\'RE HIRING|HIRING|URGENT HIRING|LOOKING FOR|ROLE|POSITION|OPENING FOR|DESIGNATION)\s*[!:|–—-]?\s*([A-Za-z0-9 /&+().-]{3,70})', pre_cleaned, re.IGNORECASE)
         if m_role:
             role = sanitize_job_role(m_role.group(1).strip(), clean_text)
 
     if not role or role.lower() in JUNK_ROLE_WORDS:
         role = sanitize_job_role("", clean_text)
 
+    if not comp:
+        m_comp = re.search(r'(?:Why\s+Join|About)\s+([A-Z][A-Za-z0-9 &\'.-]{2,40})[?!]', clean_text)
+        if m_comp:
+            comp = m_comp.group(1).strip()
     if not comp:
         m_comp = re.search(r'(?:Company|Organization)\s*[:|-]?\s*([A-Za-z0-9 &.,\'-]+)', clean_text, re.IGNORECASE)
         if m_comp:
@@ -167,70 +180,250 @@ def parse_post_intelligence(text: str) -> dict:
         "recruiter_name": recruiter
     }
 
-def fetch_web_post(url: str) -> tuple[str, list[str]]:
-    """Fetches web post text and emails with DOM expansion, mailto extraction & urllib fallback."""
+def _is_flyer_image_url(src: str) -> bool:
+    """Filters out avatars, icons, covers, and logos; keeps hiring flyer / post media URLs."""
+    if not src or not src.startswith("http"):
+        return False
+    low = src.lower()
+    skip_tokens = (
+        "profile-displayphoto", "profile-displaybackgroundimage", "company-logo",
+        "static.licdn.com", "favicon", "/emoji", "1x1", "pixel", "avatar"
+    )
+    if any(tok in low for tok in skip_tokens):
+        return False
+    return True
+
+def _extract_html_meta_and_images(raw_html: str) -> tuple[str, list[str], list[str]]:
+    """Extracts meta descriptions, mailto emails, and candidate flyer image URLs from raw HTML."""
+    meta_parts = []
+    emails = []
+    candidate_imgs = []
+
+    if not raw_html:
+        return "", emails, candidate_imgs
+
+    unquoted_html = html_lib.unescape(urllib.parse.unquote(raw_html))
+
+    # 1. Meta tags (og:title, og:description, description, twitter:description)
+    for m in re.finditer(r'<meta[^>]+(?:property|name)=["\'](?:og:title|og:description|description|twitter:description)["\'][^>]+content=["\']([^"\']*)["\']', raw_html, re.IGNORECASE):
+        val = html_lib.unescape(m.group(1)).strip()
+        if val and "500 million+ members" not in val and val not in meta_parts:
+            meta_parts.append(val)
+
+    # 2. Mailto links
+    mailtos = re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,15})', unquoted_html, re.IGNORECASE)
+    for m in mailtos:
+        clean_m = m.lower().strip()
+        if clean_m not in emails and not any(junk in clean_m for junk in ["example.com", "w3.org", "sentry.io", "licdn.com", "linkedin.com"]):
+            emails.append(clean_m)
+
+    # 3. Prioritized LinkedIn feedshare images + og:image
+    feed_imgs = re.findall(r'https://media\.licdn\.com/dms/image[^\s"\'<>\\]+', raw_html)
+    for raw_u in feed_imgs:
+        u = html_lib.unescape(raw_u)
+        if ("feedshare" in u or "article" in u) and _is_flyer_image_url(u) and u not in candidate_imgs:
+            candidate_imgs.append(u)
+
+    for m in re.finditer(r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']', raw_html, re.IGNORECASE):
+        u = html_lib.unescape(m.group(1)).strip()
+        if _is_flyer_image_url(u) and u not in candidate_imgs:
+            candidate_imgs.append(u)
+
+    return "\n".join(meta_parts), emails, candidate_imgs
+
+def _is_linkedin_login_wall(final_url: str, text: str) -> bool:
+    """Detects whether LinkedIn blocked unauthenticated access behind cold-join/authwall."""
+    low_u = (final_url or "").lower()
+    low_t = (text or "").lower()
+    if any(m in low_u for m in ("/signup/cold-join", "/uas/login", "/authwall", "linkedin.com/login")):
+        return True
+    if "join linkedin now" in low_t and len(low_t) < 600:
+        return True
+    return False
+
+def _playwright_fetch(url: str, use_li_at: bool = False) -> tuple[str, str, str, list[str]]:
+    """Fetches a URL using Playwright Chromium, returning (final_url, dom_text, raw_html, dom_imgs)."""
+    from playwright.sync_api import sync_playwright
+    dom_text, raw_html, final_url = "", "", url
+    dom_imgs = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        ctx = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 900}
+        )
+        if use_li_at and LINKEDIN_LI_AT:
+            ctx.add_cookies([{
+                "name": "li_at",
+                "value": LINKEDIN_LI_AT,
+                "domain": ".linkedin.com",
+                "path": "/"
+            }])
+        page = ctx.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=35000)
+        time.sleep(2.5)
+        final_url = page.url
+
+        # Expand "see more" / "...more" if present
+        try:
+            see_more = page.query_selector("button.feed-shared-inline-show-more-text__see-more-less-toggle, button.see-more, button[aria-label*='more']")
+            if see_more:
+                see_more.click(timeout=3000)
+                time.sleep(1)
+        except Exception:
+            pass
+
+        elem = page.query_selector("main") or page.query_selector("article") or page.query_selector("body")
+        if elem:
+            dom_text = elem.inner_text() or ""
+
+        raw_html = page.content() or ""
+
+        try:
+            imgs = page.eval_on_selector_all("img", """els => els.map(e => ({
+                src: e.src || e.getAttribute('data-delayed-url') || '',
+                cls: e.className || '',
+                w: e.naturalWidth || 0,
+                h: e.naturalHeight || 0
+            }))""")
+            for im in imgs:
+                src = (im.get("src") or "").strip()
+                cls = (im.get("cls") or "").lower()
+                w, h = im.get("w") or 0, im.get("h") or 0
+                if "cover-img" in cls or "hue-web-entity" in cls:
+                    continue
+                if _is_flyer_image_url(src) and (w >= 250 or "feedshare" in src.lower()):
+                    if src not in dom_imgs:
+                        dom_imgs.append(src)
+        except Exception:
+            pass
+
+        browser.close()
+
+    return final_url, dom_text, raw_html, dom_imgs
+
+def _ocr_candidate_images(img_urls: list[str]) -> tuple[str, list[str]]:
+    """Downloads up to top 3 candidate post images, runs OCR to find embedded emails, and cleans up temp files."""
+    combined_ocr = []
+    found_emails = []
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    for idx, img_url in enumerate(img_urls[:3]):
+        tmp_path = os.path.join(TEMP_DIR, f"web_flyer_{int(time.time())}_{idx}.jpg")
+        try:
+            print(f"[Engine] Downloading post flyer image #{idx + 1} for OCR...")
+            req = urllib.request.Request(img_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = resp.read()
+            if len(data) < 2048:
+                continue
+            with open(tmp_path, "wb") as f:
+                f.write(data)
+            ocr_txt, img_emails = extract_from_image(tmp_path)
+            if ocr_txt:
+                combined_ocr.append(ocr_txt)
+            for em in img_emails:
+                if em not in found_emails:
+                    found_emails.append(em)
+            if found_emails:
+                break
+        except Exception as e:
+            print(f"[Flyer OCR Notice #{idx + 1}]: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+    return "\n".join(combined_ocr), found_emails
+
+def _fetch_web_post_detailed(url: str) -> tuple[str, list[str], str]:
+    """
+    Fetches web post text, meta tags, mailto links, and post flyer images (with OCR fallback).
+    Returns: (post_text, emails, block_reason)
+    """
     print(f"[Engine] Fetching Web URL: {url}")
     post_text = ""
+    raw_html = ""
+    final_url = url
     emails = []
+    candidate_imgs = []
+    block_reason = ""
 
+    # 1. Clean Playwright fetch first (no stale cookies)
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
-            page = browser.new_page(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800}
-            )
-            page.goto(url, wait_until="domcontentloaded", timeout=35000)
-            time.sleep(2)
-
-            # 1. Expand "see more" / "...more" if present
-            try:
-                see_more = page.query_selector("button.feed-shared-inline-show-more-text__see-more-less-toggle, button.see-more, button[aria-label*='more']")
-                if see_more:
-                    see_more.click(timeout=3000)
-                    time.sleep(1)
-            except Exception:
-                pass
-
-            # 2. Extract DOM text
-            elem = page.query_selector("main") or page.query_selector("article") or page.query_selector("body")
-            if elem:
-                post_text = elem.inner_text() or ""
-
-            # 3. Extract raw HTML & unquote mailto links
-            raw_html = page.content() or ""
-            unquoted_html = urllib.parse.unquote(raw_html)
-            mailtos = re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', unquoted_html, re.IGNORECASE)
-            for m in mailtos:
-                clean_m = m.lower().strip()
-                if clean_m not in emails and not any(junk in clean_m for junk in ["example.com", "w3.org", "sentry.io"]):
-                    emails.append(clean_m)
-
-            browser.close()
+        final_url, post_text, raw_html, dom_imgs = _playwright_fetch(url, use_li_at=False)
+        for im in dom_imgs:
+            if im not in candidate_imgs:
+                candidate_imgs.append(im)
     except Exception as e:
         print(f"[Playwright Notice]: {e}. Attempting urllib fetch.")
+
+    # 2. Urllib fallback if Playwright returned empty/failed
+    if not raw_html:
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
             with urllib.request.urlopen(req, timeout=15) as resp:
+                final_url = resp.geturl()
                 raw_html = resp.read().decode('utf-8', errors='ignore')
-                unquoted_html = urllib.parse.unquote(raw_html)
-                mailtos = re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', unquoted_html, re.IGNORECASE)
-                for m in mailtos:
-                    clean_m = m.lower().strip()
-                    if clean_m not in emails and not any(junk in clean_m for junk in ["example.com", "w3.org", "sentry.io"]):
-                        emails.append(clean_m)
                 post_text = re.sub(r'<[^>]+>', ' ', raw_html)
         except Exception as e2:
             print(f"[Urllib Fetch Error]: {e2}")
+
+    # 3. Retry with LINKEDIN_LI_AT ONLY if LinkedIn gated the post behind a login wall
+    if _is_linkedin_login_wall(final_url, post_text) and LINKEDIN_LI_AT:
+        print("[Engine] LinkedIn login wall hit; retrying with LINKEDIN_LI_AT cookie...")
+        try:
+            auth_url, auth_text, auth_html, auth_imgs = _playwright_fetch(url, use_li_at=True)
+            if not _is_linkedin_login_wall(auth_url, auth_text) and len(auth_text) > len(post_text):
+                final_url, post_text, raw_html = auth_url, auth_text, auth_html
+                for im in auth_imgs:
+                    if im not in candidate_imgs:
+                        candidate_imgs.append(im)
+        except Exception as e_auth:
+            print(f"[LinkedIn Auth Retry Notice]: {e_auth}")
+
+    # 4. Extract meta text, mailto emails, and HTML image candidates
+    meta_text, html_emails, html_imgs = _extract_html_meta_and_images(raw_html)
+    if meta_text:
+        post_text = f"{meta_text}\n{post_text}".strip()
+    for em in html_emails:
+        if em not in emails:
+            emails.append(em)
+    for im in html_imgs:
+        if im not in candidate_imgs:
+            candidate_imgs.append(im)
 
     for em in extract_emails(post_text):
         if em not in emails:
             emails.append(em)
 
+    # 5. Still login-walled with zero content?
+    if not emails and not candidate_imgs and _is_linkedin_login_wall(final_url, post_text):
+        block_reason = "linkedin_login_wall"
+
+    # 6. CRITICAL FALLBACK: If post text had NO email, OCR any flyer images attached to the post!
+    if not emails and candidate_imgs:
+        ocr_text, img_emails = _ocr_candidate_images(candidate_imgs)
+        if ocr_text:
+            post_text = f"{post_text}\n{ocr_text}".strip()
+        for em in img_emails:
+            if em not in emails:
+                emails.append(em)
+        for em in extract_emails(post_text):
+            if em not in emails:
+                emails.append(em)
+
+    return post_text, emails, block_reason
+
+def fetch_web_post(url: str) -> tuple[str, list[str]]:
+    """Backward-compatible wrapper returning (post_text, emails)."""
+    post_text, emails, _ = _fetch_web_post_detailed(url)
     return post_text, emails
 
 def record_history(email: str, role: str, company: str, location: str, post_url: str, cv_file: str):
@@ -261,21 +454,25 @@ def record_history(email: str, role: str, company: str, location: str, post_url:
     with open(SENT_HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
-def process_and_apply(input_source: str, is_image_path: bool = False) -> dict:
-    """Universal Entrypoint: processes URL, raw text, or flyer image and dispatches cold email."""
+def process_and_apply(input_source: str, is_image_path: bool = False, extra_text: str = "") -> dict:
+    """Universal Entrypoint: processes URL, raw text, or flyer image (+ optional caption) and dispatches cold email."""
     post_text = ""
     emails = []
     post_url = ""
+    block_reason = ""
 
     if is_image_path:
         print(f"[Engine] Processing image file: {input_source}")
-        post_text, emails = extract_from_image(input_source)
+        ocr_text, emails = extract_from_image(input_source)
+        post_text = f"{extra_text}\n{ocr_text}".strip() if extra_text else ocr_text
     else:
         raw_input = input_source.strip()
         url_match = re.search(r'https?://[^\s]+', raw_input)
         if url_match:
             post_url = url_match.group(0)
-            post_text, emails = fetch_web_post(post_url)
+            post_text, emails, block_reason = _fetch_web_post_detailed(post_url)
+            if raw_input != post_url:
+                post_text = f"{raw_input}\n{post_text}".strip()
         else:
             post_text = raw_input
             emails = extract_emails(post_text)
@@ -285,6 +482,14 @@ def process_and_apply(input_source: str, is_image_path: bool = False) -> dict:
             emails.append(e)
 
     if not emails:
+        if block_reason == "linkedin_login_wall":
+            return {
+                "success": False,
+                "error": (
+                    "LinkedIn ne is post ko Login Wall ('Members Only') ke peeche lock kiya hua hai.\n"
+                    "👉 Kripya is post ka <b>Screenshot Photo</b> ya <b>Text copy</b> karke bhej dein — main turant email nikal kar apply kar dunga!"
+                )
+            }
         return {
             "success": False,
             "error": "Post ya flyer photo me recruiter ki email nahi mili. Kripya check karein ya HR ki email sath me likh kar bhejein."

@@ -12,6 +12,12 @@ os.chdir(BASE_DIR)
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+# Guard against pythonw.exe NoneType stdout/stderr on Windows
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
 import time
 import requests
 from config import API_URL, TELEGRAM_BOT_TOKEN
@@ -54,4 +60,9 @@ def run_local():
             time.sleep(3)
 
 if __name__ == "__main__":
-    run_local()
+    try:
+        run_local()
+    except Exception as e:
+        import traceback
+        with open(os.path.join(BASE_DIR, "logs", "fatal_crash.log"), "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)

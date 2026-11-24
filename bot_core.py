@@ -5,6 +5,7 @@ Shared by both Webhook Server and Local Polling Runner.
 """
 
 import os
+import sys
 import time
 import requests
 from datetime import datetime
@@ -19,7 +20,11 @@ LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 def log(msg: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"[{timestamp}] {msg}"
-    print(formatted, flush=True)
+    if sys.stdout is not None:
+        try:
+            print(formatted, flush=True)
+        except Exception:
+            pass
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(formatted + "\n")

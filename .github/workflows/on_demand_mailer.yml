@@ -1,15 +1,12 @@
-name: On-Demand Job Auto-Mailer (Event-Triggered & Scheduled)
+name: On-Demand Job Auto-Mailer (Event-Triggered Only)
 
 on:
-  # 1. Automatic scheduled cloud polling (100% Free, runs even when laptop is OFF)
-  schedule:
-    - cron: '*/10 * * * *'
-
-  # 2. Triggered automatically by Telegram message via Webhook / Bridge
+  # Triggered ONLY when a Telegram message arrives via Webhook / Bridge
+  # ZERO continuous polling. ZERO unnecessary runs. 100% Event-Driven.
   repository_dispatch:
     types: [telegram_job]
 
-  # 3. Can also be triggered manually anytime via GitHub web/mobile app
+  # Manual on-demand trigger via GitHub UI / CLI if ever needed
   workflow_dispatch:
     inputs:
       job_text_or_url:

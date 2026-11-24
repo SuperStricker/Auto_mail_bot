@@ -42,7 +42,11 @@ def send_reply(chat_id: str, text: str, reply_to_message_id: int = None):
         "disable_web_page_preview": True
     }
     if reply_to_message_id:
-        payload["reply_to_message_id"] = reply_to_message_id
+        try:
+            payload["reply_to_message_id"] = int(reply_to_message_id)
+            payload["allow_sending_without_reply"] = True
+        except Exception:
+            pass
 
     for attempt in range(3):
         try:
@@ -110,15 +114,23 @@ def _format_success_reply(res: dict, footer: str) -> str:
     comp_loc = res.get("company") or "Hiring Team"
     if res.get("location"):
         comp_loc += f" ({res['location']})"
+    post_line = f"\n🔗 <b>Post:</b> {res['post_url']}" if res.get("post_url") else ""
     return f"""🎉 <b>Application Sent Successfully!</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 💼 <b>Role:</b> {res['role']}
 🏢 <b>Company:</b> {comp_loc}
 📝 <b>Subject:</b> <code>{res['subject']}</code>
 ✉️ <b>Sent To:</b> <code>{', '.join(res['emails'])}</code>
-📎 <b>Attached CV:</b> {cv_label}
+📎 <b>Attached CV:</b> {cv_label}{post_line}
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 {footer}"""
+
+def _format_failure_reply(res: dict) -> str:
+    """Formats failure/private alerts with the exact source URL so back-to-back links stay identifiable."""
+    url_line = f"\n🔗 <b>Link:</b> {res['post_url']}" if res.get("post_url") else ""
+    if res.get("is_private"):
+        return f"{res.get('error')}{url_line}"
+    return f"⚠️ <b>Notice:</b> {res.get('error')}{url_line}"
 
 def handle_telegram_update(update: dict, runner_footer: str = "🕒 <i>Delivered via Auto Mail Bot</i>"):
     """
@@ -169,7 +181,7 @@ Main turant:
                 if res.get("success"):
                     send_reply(chat_id, _format_success_reply(res, runner_footer), msg_id)
                 else:
-                    send_reply(chat_id, f"⚠️ <b>Notice:</b> {res.get('error')}", msg_id)
+                    send_reply(chat_id, _format_failure_reply(res), msg_id)
             else:
                 send_reply(chat_id, "❌ Image download karne me dikkat aayi. Kripya dubara try karein.", msg_id)
         finally:
@@ -200,10 +212,8 @@ WhatsApp Channel ke links browser me direct open nahi hote.
         res = process_and_apply(input_text, is_image_path=False)
         if res.get("success"):
             send_reply(chat_id, _format_success_reply(res, runner_footer), msg_id)
-        elif res.get("is_private"):
-            send_reply(chat_id, res.get("error"), msg_id)
         else:
-            send_reply(chat_id, f"⚠️ <b>Notice:</b> {res.get('error')}", msg_id)
+            send_reply(chat_id, _format_failure_reply(res), msg_id)
         return
 
     log("[Notice]: No actionable text, link, or image found in payload.")

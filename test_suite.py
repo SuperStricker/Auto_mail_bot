@@ -17,7 +17,7 @@ from apply_engine import (
     _is_private_or_blocked_post
 )
 from email_sender import select_cv_for_location, create_email_body
-from bot_core import _extract_image_file_id, handle_telegram_update
+from bot_core import _extract_image_file_id, handle_telegram_update, _format_failure_reply
 from on_demand_worker import parse_cli_or_env_payload
 
 class TestEmailExtraction(unittest.TestCase):
@@ -97,6 +97,8 @@ class TestIntelligenceAndRouting(unittest.TestCase):
         self.assertTrue(_is_private_or_blocked_post("https://www.linkedin.com/signup/cold-join?session_redirect=x", "Join LinkedIn now"))
         self.assertTrue(_is_private_or_blocked_post("https://example.com/post", "", http_status=403))
         self.assertFalse(_is_private_or_blocked_post("https://www.linkedin.com/posts/ok-share-123", "We are hiring Support Engineer in Noida"))
+        msg = _format_failure_reply({"is_private": True, "post_url": "https://lnkd.in/p/gwrNkQKX", "error": "Private!"})
+        self.assertIn("https://lnkd.in/p/gwrNkQKX", msg)
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])

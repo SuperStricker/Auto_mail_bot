@@ -499,6 +499,7 @@ def process_and_apply(input_source: str, is_image_path: bool = False, extra_text
             return {
                 "success": False,
                 "is_private": True,
+                "post_url": post_url,
                 "error": (
                     "🔒 <b>This post is private — please share screenshot!</b>\n\n"
                     "Bot yeh post direct link se nahi dekh paa raha (Private / Login locked hai).\n"
@@ -508,6 +509,7 @@ def process_and_apply(input_source: str, is_image_path: bool = False, extra_text
         return {
             "success": False,
             "is_private": False,
+            "post_url": post_url,
             "error": "Post ya flyer photo me recruiter ki email nahi mili. Kripya check karein ya HR ki email sath me likh kar bhejein."
         }
 
@@ -548,5 +550,7 @@ def process_and_apply(input_source: str, is_image_path: bool = False, extra_text
     else:
         return {
             "success": False,
+            "is_private": False,
+            "post_url": post_url,
             "error": f"Email sending failed: {msg}"
         }

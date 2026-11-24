@@ -5,17 +5,17 @@ Automatically extracts recruiter emails from LinkedIn links, photos, flyers, or 
 
 ---
 
-## 🌟 Dual Mode Architecture (Zero Ban Risk)
+## 🌟 100% Cloud Serverless Architecture (Zero Laptop Dependency)
 
-1. **Cloud Mode (100% Free on Render - On-Demand Webhook):**
-   - Uses `webhook_server.py`.
-   - **Zero 24/7 continuous polling loops.**
-   - Telegram pushes updates only when you send a message.
-   - Script executes in 3-5 seconds and sleeps.
+1. **GitHub Actions Cloud Poller (Production Default):**
+   - Workflow: `.github/workflows/on_demand_mailer.yml`
+   - Automatically polls Telegram queue on a 10-minute cron (`*/10 * * * *`).
+   - Also accepts instant push events via `repository_dispatch` (`telegram_job`).
+   - Executes in 25-40 seconds on Ubuntu runners, dispatches Gmail SMTP applications, attaches targeted CV, and exits with 0 persistent resources.
+   - **Zero laptop battery, CPU, or uptime dependency.** Works 24/7 with laptop powered off.
 
-2. **Local Mode (On Your Desktop PC):**
-   - Double click `START_LOCAL.bat` or run via Windows Task Scheduler (`run_silent.vbs`).
-   - Runs locally without requiring any cloud server.
+2. **Local Fallback Mode:**
+   - Double click `START_LOCAL.bat` to run locally on your desktop if ever desired.
 
 ---
 

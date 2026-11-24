@@ -4,6 +4,14 @@ Runs on your local PC with safe polling.
 Use this when you want to run the bot on your local desktop.
 """
 
+import os
+import sys
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(BASE_DIR)
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 import time
 import requests
 from config import API_URL, TELEGRAM_BOT_TOKEN

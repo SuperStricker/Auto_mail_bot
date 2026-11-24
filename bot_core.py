@@ -19,10 +19,11 @@ LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 def log(msg: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"[{timestamp}] {msg}"
-    print(formatted)
+    print(formatted, flush=True)
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(formatted + "\n")
+            f.flush()
     except Exception:
         pass
 

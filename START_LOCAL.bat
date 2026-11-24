@@ -5,5 +5,5 @@ echo ========================================================
 echo   Auto Mail Bot - Local Runner (Desktop Mode)
 echo   Listening for Telegram Messages (@Shuaib_Job_Mailer_bot)...
 echo ========================================================
-python run_local.py
+"C:\Users\IT\AppData\Local\Programs\Python\Python313\python.exe" run_local.py
 pause

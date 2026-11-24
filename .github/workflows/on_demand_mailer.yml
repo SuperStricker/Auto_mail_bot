@@ -1,17 +1,25 @@
-name: On-Demand Job Auto-Mailer (Event-Triggered)
+name: On-Demand Job Auto-Mailer (Event-Triggered & Scheduled)
 
 on:
-  # 1. Triggered automatically by Telegram message via Cloudflare bridge
+  # 1. Automatic scheduled cloud polling (100% Free, runs even when laptop is OFF)
+  schedule:
+    - cron: '*/10 * * * *'
+
+  # 2. Triggered automatically by Telegram message via Webhook / Bridge
   repository_dispatch:
     types: [telegram_job]
 
-  # 2. Can also be triggered manually anytime via GitHub web/mobile app
+  # 3. Can also be triggered manually anytime via GitHub web/mobile app
   workflow_dispatch:
     inputs:
       job_text_or_url:
         description: 'Paste LinkedIn Job URL or copied text'
-        required: true
+        required: false
         type: string
+
+concurrency:
+  group: auto-mail-bot-cloud
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -43,17 +51,17 @@ jobs:
         run: |
           python -m playwright install --with-deps chromium
 
-      - name: Process Single Application & Send Email
+      - name: Process Application & Send Email
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # If triggered via manual workflow_dispatch
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.job_text_or_url }}" ]; then
             python on_demand_worker.py --text "${{ github.event.inputs.job_text_or_url }}"
-          else
-            # Triggered via repository_dispatch from Telegram
+          elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             python on_demand_worker.py --payload '${{ toJson(github.event.client_payload) }}'
+          else
+            python on_demand_worker.py --poll
           fi

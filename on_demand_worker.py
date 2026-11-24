@@ -155,23 +155,69 @@ WhatsApp Channel ke links browser me open nahi hote.
 
     print("[Notice]: No actionable text or photo found in payload.")
 
+def poll_and_process_pending():
+    """
+    Checks Telegram getUpdates for any queued messages.
+    Processes each message, sends email + replies to Telegram,
+    and updates the offset so each message is processed exactly once.
+    """
+    print("=" * 60)
+    print("🔍 Checking Telegram Queue for Pending Messages...")
+    print(f"   Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+    try:
+        r = requests.get(f"{API_URL}/getUpdates", timeout=15)
+        data = r.json()
+        if not data.get("ok"):
+            print(f"[Error]: Telegram getUpdates failed: {data}")
+            return
+
+        updates = data.get("result", [])
+        if not updates:
+            print("✅ No pending updates found in Telegram queue. Exiting gracefully.")
+            return
+
+        print(f"⚡ Found {len(updates)} pending update(s). Processing now...")
+        for u in updates:
+            up_id = u["update_id"]
+            print(f"\n--- Processing Update ID: {up_id} ---")
+            try:
+                process_single_event(u)
+            except Exception as e:
+                print(f"[Update Error on {up_id}]: {e}")
+            
+            # Acknowledge update offset so it is not processed again
+            try:
+                requests.get(f"{API_URL}/getUpdates", params={"offset": up_id + 1}, timeout=10)
+            except Exception as e:
+                print(f"[Offset Error]: {e}")
+
+        print("\n✅ All pending Telegram updates processed and queue cleared!")
+    except Exception as e:
+        print(f"[Polling Error]: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description="Run single on-demand job application")
     parser.add_argument("--payload", type=str, default="", help="JSON payload from Telegram / GitHub Event")
     parser.add_argument("--text", type=str, default="", help="Direct text/link input")
+    parser.add_argument("--poll", action="store_true", help="Poll Telegram getUpdates and process any queued messages")
     args = parser.parse_args()
 
-    payload = {}
-    if args.payload:
+    if args.poll:
+        poll_and_process_pending()
+    elif args.payload:
         try:
             payload = json.loads(args.payload)
         except Exception:
             payload = {"text": args.payload}
+        process_single_event(payload)
     elif args.text:
-        payload = {"text": args.text}
+        process_single_event({"text": args.text})
+    else:
+        # Default behavior if run with no args: poll for pending updates
+        poll_and_process_pending()
 
-    process_single_event(payload)
-    print("✅ Single execution complete. Exiting gracefully with code 0.")
+    print("✅ Execution complete. Exiting gracefully with code 0.")
     sys.exit(0)
 
 if __name__ == "__main__":

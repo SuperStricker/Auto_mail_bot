@@ -14,7 +14,8 @@ if BASE_DIR not in sys.path:
 from ocr_engine import extract_emails
 from apply_engine import parse_post_intelligence, extract_company_from_domain, sanitize_job_role
 from email_sender import select_cv_for_location, create_email_body
-from bot_core import _extract_image_file_id
+from bot_core import _extract_image_file_id, handle_telegram_update
+from on_demand_worker import parse_cli_or_env_payload
 
 class TestEmailExtraction(unittest.TestCase):
     def test_dotted_usernames_matching_tld_substrings_not_corrupted(self):
@@ -80,6 +81,14 @@ class TestIntelligenceAndRouting(unittest.TestCase):
         # Slimmed Cloudflare payload
         self.assertEqual(_extract_image_file_id({}, {"photo_file_id": "cf_photo"}), "cf_photo")
         self.assertEqual(_extract_image_file_id({}, {"doc_file_id": "cf_doc", "doc_mime": "image/jpeg"}), "cf_doc")
+
+    def test_workflow_dispatch_null_payload_handling(self):
+        # When workflow_dispatch runs, client_payload JSON is "null" while JOB_TEXT_OR_URL holds the input
+        self.assertEqual(parse_cli_or_env_payload("null", "https://lnkd.in/p/gEDGHxSk"), {"text": "https://lnkd.in/p/gEDGHxSk"})
+        self.assertEqual(parse_cli_or_env_payload("{}", "https://lnkd.in/p/gEDGHxSk"), {"text": "https://lnkd.in/p/gEDGHxSk"})
+        self.assertIsNone(parse_cli_or_env_payload("null", ""))
+        # Should never crash on None update
+        handle_telegram_update(None)
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])

@@ -59,6 +59,20 @@ def poll_and_process_pending():
     except Exception as e:
         print(f"[Polling Error]: {e}")
 
+def parse_cli_or_env_payload(raw_payload: str, raw_text: str) -> dict | None:
+    """Resolves clean payload dict from JSON string or text, ignoring GitHub 'null'/'{}' values."""
+    cleaned = (raw_payload or "").strip()
+    if cleaned and cleaned not in ("null", "None", "{}"):
+        try:
+            loaded = json.loads(cleaned)
+            if isinstance(loaded, dict) and loaded:
+                return loaded
+        except Exception:
+            return {"text": cleaned}
+    if (raw_text or "").strip():
+        return {"text": raw_text.strip()}
+    return None
+
 def main():
     parser = argparse.ArgumentParser(description="Run single on-demand job application")
     parser.add_argument("--payload", type=str, default="", help="JSON payload from Telegram / GitHub Event")
@@ -68,17 +82,12 @@ def main():
 
     raw_payload = args.payload or os.environ.get("PAYLOAD_JSON", "")
     raw_text = args.text or os.environ.get("JOB_TEXT_OR_URL", "")
+    payload = parse_cli_or_env_payload(raw_payload, raw_text)
 
     if args.poll:
         poll_and_process_pending()
-    elif raw_payload:
-        try:
-            payload = json.loads(raw_payload)
-        except Exception:
-            payload = {"text": raw_payload}
+    elif payload:
         process_single_event(payload)
-    elif raw_text:
-        process_single_event({"text": raw_text})
     else:
         poll_and_process_pending()
 

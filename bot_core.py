@@ -125,11 +125,14 @@ def handle_telegram_update(update: dict, runner_footer: str = "🕒 <i>Delivered
     Processes a single incoming Telegram update dict or normalized Cloudflare bridge payload.
     Supports photo flyers, uncompressed image documents, links (including embedded flyer OCR), and raw text.
     """
+    if not isinstance(update, dict):
+        return
     msg = update.get("message") or update.get("channel_post") or update
     if not isinstance(msg, dict):
         return
 
-    chat_id = str(msg.get("chat", {}).get("id") or update.get("chat_id") or AUTHORIZED_CHAT_ID)
+    chat_obj = msg.get("chat") if isinstance(msg.get("chat"), dict) else {}
+    chat_id = str(chat_obj.get("id") or update.get("chat_id") or AUTHORIZED_CHAT_ID)
     msg_id = msg.get("message_id") or update.get("message_id")
     text = (msg.get("text") or update.get("text") or "").strip()
     caption = (msg.get("caption") or update.get("caption") or "").strip()

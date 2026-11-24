@@ -57,6 +57,7 @@ jobs:
           PAYLOAD_JSON: ${{ toJson(github.event.client_payload) }}
           JOB_TEXT_OR_URL: ${{ github.event.inputs.job_text_or_url }}
         run: |
+          python test_suite.py
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$JOB_TEXT_OR_URL" ]; then
             python on_demand_worker.py
           elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then

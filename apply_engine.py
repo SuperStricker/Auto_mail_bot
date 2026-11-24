@@ -98,9 +98,43 @@ def sanitize_job_role(raw_role: str, text: str = "") -> str:
 
     return clean
 
+JUNK_ROLE_PHRASES = (
+    "our client", "multiple positions", "urgent basis", "immediate joiner",
+    "below role", "following role", "your resume", "check below", "please share"
+)
+
+def _extract_headline_role(clean_text: str) -> str:
+    """Extracts standalone job title lines near top of post/JD when no explicit 'Hiring:' prefix exists."""
+    role_keywords = re.compile(
+        r'\b(?:engineer|administrator|admin|analyst|manager|executive|lead|specialist|architect|consultant|technician|coordinator|officer)\b',
+        re.IGNORECASE
+    )
+    domain_keywords = re.compile(
+        r'\b(?:it|desktop|support|system|systems|network|infrastructure|cloud|azure|aws|m365|intune|service\s*desk|help\s*desk|helpdesk|noc|soc|iam|devops|server|end\s*user|euc|l1|l2|l3|hardware|technical)\b',
+        re.IGNORECASE
+    )
+    skip_line = re.compile(
+        r'^(?:about|key\s+responsibilities|responsibilities|must\s+have|requirements|qualifications|skills|why\s+join|benefits|perks|send\s+|share\s+|apply\s+|http|www\.|•|\*|-|📍|💼|🚀|🕒|💰)',
+        re.IGNORECASE
+    )
+    for raw_line in clean_text.splitlines()[:30]:
+        line = re.sub(r'^[^\w]+', '', raw_line).strip()
+        if not line or len(line) < 6 or len(line) > 75:
+            continue
+        if skip_line.match(line) or "@" in line or "likes this" in line.lower():
+            continue
+        words = line.split()
+        if not (2 <= len(words) <= 9):
+            continue
+        if role_keywords.search(line) and domain_keywords.search(line):
+            cleaned = sanitize_job_role(line, clean_text)
+            if cleaned and cleaned.lower() not in JUNK_ROLE_WORDS and not any(jp in cleaned.lower() for jp in JUNK_ROLE_PHRASES):
+                return cleaned
+    return ""
+
 def parse_post_intelligence(text: str) -> dict:
-    """Analyzes job post text with FreeLLM if available, otherwise pure regex."""
-    clean_text = text.strip()[:4000]
+    """Analyzes job post text with FreeLLM if available, otherwise multi-strategy regex."""
+    clean_text = text.strip()[:6000]
     role, comp, loc, subj, recruiter = "", "", "", "", ""
 
     if os.path.exists(ASK_FREELLM_TOOL):
@@ -138,23 +172,29 @@ def parse_post_intelligence(text: str) -> dict:
 
     if not role or role.lower() in JUNK_ROLE_WORDS:
         pre_cleaned = re.sub(r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|hiring|alert|urgent)\s*[:|–—-]?\s*', '', clean_text, flags=re.IGNORECASE)
-        m_role = re.search(r'(?:WE ARE HIRING|WE\'RE HIRING|HIRING|URGENT HIRING|LOOKING FOR|ROLE|POSITION|OPENING FOR|DESIGNATION)\s*[!:|–—-]?\s*([A-Za-z0-9 /&+().-]{3,70})', pre_cleaned, re.IGNORECASE)
+        m_role = re.search(r'(?:WE ARE HIRING|WE\'RE HIRING|HIRING FOR|HIRING|URGENT HIRING|LOOKING FOR|ROLE|POSITION|OPENING FOR|DESIGNATION)\s*[!:|–—-]?\s*([^\n\r]{3,75})', pre_cleaned, re.IGNORECASE)
         if m_role:
-            role = sanitize_job_role(m_role.group(1).strip(), clean_text)
+            cand = m_role.group(1).strip()
+            if not any(jp in cand.lower() for jp in JUNK_ROLE_PHRASES):
+                role = sanitize_job_role(cand, clean_text)
+
+    # Check top header lines (captures LinkedIn Job pages & clean headline posts)
+    if not role or role.lower() in JUNK_ROLE_WORDS:
+        role = _extract_headline_role(clean_text)
 
     if not role or role.lower() in JUNK_ROLE_WORDS:
         role = sanitize_job_role("", clean_text)
 
     if not comp:
         m_comp = re.search(r'(?:Why\s+Join|About)\s+([A-Z][A-Za-z0-9 &\'.-]{2,40})[?!]', clean_text)
-        if m_comp:
+        if m_comp and m_comp.group(1).lower() not in ("the role", "the job", "this role", "this opportunity", "us"):
             comp = m_comp.group(1).strip()
     if not comp:
         m_comp = re.search(r'(?:Company|Organization)\s*[:|-]?\s*([A-Za-z0-9 &.,\'-]+)', clean_text, re.IGNORECASE)
         if m_comp:
-            comp = m_comp.group(1).strip()
+            comp = m_comp.group(1).strip().split("\n")[0]
         else:
-            m_comp = re.search(r'([A-Z][A-Za-z0-9 &.,\'-]+(?:Services|Consultancy|Technologies|Solutions|Infotech|Infosystems|Pvt Ltd|Private Limited|Corp|LLP|Inc|Group|Holdings))\s+(?:is hiring|is looking|hiring|looking)', clean_text)
+            m_comp = re.search(r'([A-Z][A-Za-z0-9 &.,\'-]+(?:Services|Consultancy|Technologies|Solutions|Infotech|Infosystems|Pvt\.?\s*Ltd\.?|Private Limited|Corp|LLP|Inc|Group|Holdings))\s*(?:\n|is\s+hiring|is\s+looking|hiring|looking|·)', clean_text)
             if m_comp:
                 comp = m_comp.group(1).strip()
 
@@ -163,10 +203,18 @@ def parse_post_intelligence(text: str) -> dict:
         if m_loc:
             loc = clean_location(m_loc.group(1).split("\n")[0])
         else:
-            for country_pat in [r'\bSaudi\s+Arabia\b', r'\bKSA\b', r'\bUAE\b', r'\bDubai\b', r'\bQatar\b', r'\bDoha\b', r'\bOman\b', r'\bKuwait\b', r'\bBahrain\b', r'\bGCC\b']:
-                m_country = re.search(country_pat, clean_text, re.IGNORECASE)
-                if m_country:
-                    loc = m_country.group(0)
+            city_country_pats = [
+                r'\bSaudi\s+Arabia\b', r'\bKSA\b', r'\bUAE\b', r'\bDubai\b', r'\bAbu\s+Dhabi\b',
+                r'\bQatar\b', r'\bDoha\b', r'\bOman\b', r'\bKuwait\b', r'\bBahrain\b', r'\bGCC\b',
+                r'\bGreater\s+Noida\b', r'\bNew\s+Delhi\b', r'\bDelhi\s+NCR\b', r'\bNoida\b',
+                r'\bGurugram\b', r'\bGurgaon\b', r'\bFaridabad\b', r'\bGhaziabad\b', r'\bDelhi\b',
+                r'\bBengaluru\b', r'\bBangalore\b', r'\bHyderabad\b', r'\bPune\b', r'\bMumbai\b',
+                r'\bChennai\b', r'\bKolkata\b', r'\bJaipur\b', r'\bChandigarh\b', r'\bLondon\b', r'\bUK\b'
+            ]
+            for pat in city_country_pats:
+                m_city = re.search(pat, clean_text, re.IGNORECASE)
+                if m_city:
+                    loc = m_city.group(0)
                     break
 
     if not subj:
@@ -467,19 +515,32 @@ def record_history(email: str, role: str, company: str, location: str, post_url:
     with open(SENT_HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
-def process_and_apply(input_source: str, is_image_path: bool = False, extra_text: str = "") -> dict:
-    """Universal Entrypoint: processes URL, raw text, or flyer image (+ optional caption) and dispatches cold email."""
+def process_and_apply(input_source: str | list[str], is_image_path: bool = False, extra_text: str = "") -> dict:
+    """
+    Universal Entrypoint: processes URL, raw text, single flyer image, or an ordered list of
+    multi-part screenshot paths (top headline + bottom email) and dispatches one tailored cold email.
+    """
     post_text = ""
     emails = []
     post_url = ""
     block_reason = ""
 
     if is_image_path:
-        print(f"[Engine] Processing image file: {input_source}")
-        ocr_text, emails = extract_from_image(input_source)
-        post_text = f"{extra_text}\n{ocr_text}".strip() if extra_text else ocr_text
+        paths = input_source if isinstance(input_source, list) else [input_source]
+        ocr_chunks = []
+        if extra_text:
+            ocr_chunks.append(extra_text)
+        for idx, img_path in enumerate(paths):
+            print(f"[Engine] Processing image #{idx + 1}/{len(paths)}: {img_path}")
+            ocr_txt, img_emails = extract_from_image(img_path)
+            if ocr_txt:
+                ocr_chunks.append(ocr_txt)
+            for em in img_emails:
+                if em not in emails:
+                    emails.append(em)
+        post_text = "\n\n".join(ocr_chunks).strip()
     else:
-        raw_input = input_source.strip()
+        raw_input = (input_source or "").strip()
         url_match = re.search(r'https?://[^\s]+', raw_input)
         if url_match:
             post_url = url_match.group(0)

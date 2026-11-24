@@ -1,0 +1,14 @@
+name = "auto-mail-bot-bridge"
+main = "cloudflare_bridge.js"
+compatibility_date = "2026-11-24"
+
+[vars]
+GITHUB_REPO = "SuperStricker/Auto_mail_bot"
+
+[[durable_objects.bindings]]
+name = "ALBUM_BUFFER"
+class_name = "AlbumBuffer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AlbumBuffer"]

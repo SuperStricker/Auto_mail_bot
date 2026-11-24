@@ -81,29 +81,44 @@ def download_telegram_file(file_id: str, dest_path: str) -> bool:
         log(f"File download error: {e}")
         return False
 
-def _extract_image_file_id(msg: dict, payload: dict) -> str:
-    """Extracts highest-res image file_id from Telegram photo, image document, or slimmed payload."""
-    if payload.get("photo_file_id"):
-        return payload["photo_file_id"]
+def _extract_image_items(msg: dict, payload: dict) -> list[dict]:
+    """
+    Extracts ordered list of image items from single photo, image document, or Cloudflare AlbumBuffer batch.
+    Returns list of dicts: [{"file_id": ..., "name": ..., "caption": ...}]
+    """
+    if isinstance(payload.get("image_items"), list) and payload["image_items"]:
+        return [it for it in payload["image_items"] if isinstance(it, dict) and it.get("file_id")]
 
-    photos = msg.get("photo", [])
+    if payload.get("photo_file_id"):
+        return [{"file_id": payload["photo_file_id"], "name": "photo.jpg", "caption": payload.get("caption", "")}]
+
+    photos = msg.get("photo") or []
     if photos:
-        return photos[-1].get("file_id", "")
+        fid = photos[-1].get("file_id", "")
+        if fid:
+            return [{"file_id": fid, "name": "photo.jpg", "caption": msg.get("caption", "")}]
 
     doc = msg.get("document") or {}
     if doc:
         mime = (doc.get("mime_type") or "").lower()
         fname = (doc.get("file_name") or "").lower()
         if mime.startswith("image/") or fname.endswith(IMAGE_EXTS):
-            return doc.get("file_id", "")
+            fid = doc.get("file_id", "")
+            if fid:
+                return [{"file_id": fid, "name": fname or "image.jpg", "caption": msg.get("caption", "")}]
 
     if payload.get("doc_file_id"):
         mime = (payload.get("doc_mime") or "").lower()
         fname = (payload.get("doc_name") or "").lower()
         if mime.startswith("image/") or fname.endswith(IMAGE_EXTS):
-            return payload["doc_file_id"]
+            return [{"file_id": payload["doc_file_id"], "name": fname or "image.jpg", "caption": payload.get("caption", "")}]
 
-    return ""
+    return []
+
+def _extract_image_file_id(msg: dict, payload: dict) -> str:
+    """Backward-compatible single file_id extractor."""
+    items = _extract_image_items(msg, payload)
+    return items[0]["file_id"] if items else ""
 
 def _format_success_reply(res: dict, footer: str) -> str:
     cv_label = (
@@ -148,7 +163,7 @@ def handle_telegram_update(update: dict, runner_footer: str = "🕒 <i>Delivered
     msg_id = msg.get("message_id") or update.get("message_id")
     text = (msg.get("text") or update.get("text") or "").strip()
     caption = (msg.get("caption") or update.get("caption") or "").strip()
-    image_file_id = _extract_image_file_id(msg, update)
+    image_items = _extract_image_items(msg, update)
 
     if AUTHORIZED_CHAT_ID and chat_id != AUTHORIZED_CHAT_ID:
         log(f"Unauthorized access attempt from Chat ID: {chat_id}")
@@ -161,23 +176,34 @@ Aapka <b>Auto-Mail Bot</b> bilkul ready hai! 🚀
 
 Aap jab bhi LinkedIn scroll karein aur koi achhi IT job dikhe:
 1️⃣ <b>Post ka Link</b> yahan share/paste kar dein
-2️⃣ Ya <b>Post ka Screenshot / Photo</b> yahan bhej dein
+2️⃣ Ya <b>1 ya Multiple Screenshots (Top + Bottom SS)</b> ek sath bhej dein
 3️⃣ Ya <b>Post ka Text copy</b> karke yahan bhej dein
 
 Main turant:
-• Flyer / Post Image ka OCR & HR Email extract karunga
+• Sabhi Screenshots / Post Images ka OCR karke Headline + Email merge karunga
 • Exact Subject & CV skills match karunga
 • Gmail se updated CV attach karke cold email bhej dunga!"""
         send_reply(chat_id, welcome, msg_id)
         return
 
-    # Case 1: Photo / Image Document sent
-    if image_file_id:
-        send_reply(chat_id, "⚡ <i>Flyer Image detect ho gayi! OCR se HR ki email extract kar rahe hain...</i>", msg_id)
-        local_filename = os.path.join(TEMP_DIR, f"tg_{int(time.time())}.jpg")
+    # Case 1: Single OR Multiple Photos / Image Documents sent
+    if image_items:
+        total = len(image_items)
+        if total > 1:
+            send_reply(chat_id, f"⚡ <i>{total} Screenshots ek sath detect hui! Sabhi ko ek post maan kar Headline + Email merge karke process kar rahe hain...</i>", msg_id)
+        else:
+            send_reply(chat_id, "⚡ <i>Flyer Image detect ho gayi! OCR se HR ki email extract kar rahe hain...</i>", msg_id)
+
+        downloaded_paths = []
+        ts = int(time.time())
         try:
-            if download_telegram_file(image_file_id, local_filename):
-                res = process_and_apply(local_filename, is_image_path=True, extra_text=caption)
+            for idx, item in enumerate(image_items):
+                local_filename = os.path.join(TEMP_DIR, f"tg_{ts}_{idx}.jpg")
+                if download_telegram_file(item["file_id"], local_filename):
+                    downloaded_paths.append(local_filename)
+
+            if downloaded_paths:
+                res = process_and_apply(downloaded_paths, is_image_path=True, extra_text=caption)
                 if res.get("success"):
                     send_reply(chat_id, _format_success_reply(res, runner_footer), msg_id)
                 else:
@@ -185,11 +211,12 @@ Main turant:
             else:
                 send_reply(chat_id, "❌ Image download karne me dikkat aayi. Kripya dubara try karein.", msg_id)
         finally:
-            if os.path.exists(local_filename):
-                try:
-                    os.remove(local_filename)
-                except Exception:
-                    pass
+            for p in downloaded_paths:
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
         return
 
     # Case 2: Link or Text sent

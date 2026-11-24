@@ -14,10 +14,10 @@ if BASE_DIR not in sys.path:
 from ocr_engine import extract_emails
 from apply_engine import (
     parse_post_intelligence, extract_company_from_domain, sanitize_job_role,
-    _is_private_or_blocked_post
+    _is_private_or_blocked_post, process_and_apply
 )
 from email_sender import select_cv_for_location, create_email_body
-from bot_core import _extract_image_file_id, handle_telegram_update, _format_failure_reply
+from bot_core import _extract_image_file_id, _extract_image_items, handle_telegram_update, _format_failure_reply
 from on_demand_worker import parse_cli_or_env_payload
 
 class TestEmailExtraction(unittest.TestCase):
@@ -99,6 +99,32 @@ class TestIntelligenceAndRouting(unittest.TestCase):
         self.assertFalse(_is_private_or_blocked_post("https://www.linkedin.com/posts/ok-share-123", "We are hiring Support Engineer in Noida"))
         msg = _format_failure_reply({"is_private": True, "post_url": "https://lnkd.in/p/gwrNkQKX", "error": "Private!"})
         self.assertIn("https://lnkd.in/p/gwrNkQKX", msg)
+
+    def test_multi_image_album_batch_extraction_and_merged_intelligence(self):
+        # Verify Cloudflare AlbumBuffer multi-image payload ordering & parsing
+        items = _extract_image_items({}, {
+            "image_items": [
+                {"file_id": "top_ss", "name": "img_1.jpg"},
+                {"file_id": "bottom_ss", "name": "img_2.jpg"},
+            ]
+        })
+        self.assertEqual([i["file_id"] for i in items], ["top_ss", "bottom_ss"])
+
+        # Top screenshot has Job Headline & Location (NO Hiring prefix & NO email);
+        # Bottom screenshot has Responsibilities + HR email (Dubai) -> merged result gets ALL!
+        from unittest.mock import patch
+        top_text = "Apex Cloud Solutions\nL2 Desktop Support Engineer\nNoida, Uttar Pradesh, India\nAbout the job"
+        bottom_text = "Key Responsibilities:\nManage M365, Active Directory, Jira\nSend your CV to careers@apexcloud.in"
+
+        with patch("apply_engine.extract_from_image", side_effect=[(top_text, []), (bottom_text, ["careers@apexcloud.in"])]), \
+             patch("apply_engine.send_cold_email", return_value=(True, "ok", "Shuaib Ali - CV.pdf", False)) as mock_send:
+            res = process_and_apply(["/tmp/top.jpg", "/tmp/bottom.jpg"], is_image_path=True)
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["emails"], ["careers@apexcloud.in"])
+        self.assertIn("Desktop Support Engineer", res["role"])
+        self.assertIn("Noida", res["location"])
+        mock_send.assert_called_once()
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])

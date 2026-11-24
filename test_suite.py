@@ -12,7 +12,10 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from ocr_engine import extract_emails
-from apply_engine import parse_post_intelligence, extract_company_from_domain, sanitize_job_role
+from apply_engine import (
+    parse_post_intelligence, extract_company_from_domain, sanitize_job_role,
+    _is_private_or_blocked_post
+)
 from email_sender import select_cv_for_location, create_email_body
 from bot_core import _extract_image_file_id, handle_telegram_update
 from on_demand_worker import parse_cli_or_env_payload
@@ -89,6 +92,11 @@ class TestIntelligenceAndRouting(unittest.TestCase):
         self.assertIsNone(parse_cli_or_env_payload("null", ""))
         # Should never crash on None update
         handle_telegram_update(None)
+
+    def test_private_or_blocked_post_detection(self):
+        self.assertTrue(_is_private_or_blocked_post("https://www.linkedin.com/signup/cold-join?session_redirect=x", "Join LinkedIn now"))
+        self.assertTrue(_is_private_or_blocked_post("https://example.com/post", "", http_status=403))
+        self.assertFalse(_is_private_or_blocked_post("https://www.linkedin.com/posts/ok-share-123", "We are hiring Support Engineer in Noida"))
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])

@@ -231,13 +231,20 @@ def _extract_html_meta_and_images(raw_html: str) -> tuple[str, list[str], list[s
 
     return "\n".join(meta_parts), emails, candidate_imgs
 
-def _is_linkedin_login_wall(final_url: str, text: str) -> bool:
-    """Detects whether LinkedIn blocked unauthenticated access behind cold-join/authwall."""
+def _is_private_or_blocked_post(final_url: str, text: str, http_status: int = 200) -> bool:
+    """Detects whether a post is private, login-walled, or blocked from guest viewing."""
     low_u = (final_url or "").lower()
     low_t = (text or "").lower()
-    if any(m in low_u for m in ("/signup/cold-join", "/uas/login", "/authwall", "linkedin.com/login")):
+    if http_status in (401, 403, 999):
         return True
-    if "join linkedin now" in low_t and len(low_t) < 600:
+    wall_urls = (
+        "/signup/cold-join", "/uas/login", "/authwall", "/checkpoint",
+        "linkedin.com/login", "/accounts/login", "/login/"
+    )
+    if any(m in low_u for m in wall_urls):
+        return True
+    wall_phrases = ("join linkedin now", "sign in to view", "log in to see posts", "this post is private")
+    if any(p in low_t for p in wall_phrases) and len(low_t) < 700:
         return True
     return False
 
@@ -351,6 +358,7 @@ def _fetch_web_post_detailed(url: str) -> tuple[str, list[str], str]:
     post_text = ""
     raw_html = ""
     final_url = url
+    http_status = 200
     emails = []
     candidate_imgs = []
     block_reason = ""
@@ -369,19 +377,24 @@ def _fetch_web_post_detailed(url: str) -> tuple[str, list[str], str]:
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
             with urllib.request.urlopen(req, timeout=15) as resp:
+                http_status = getattr(resp, "status", 200)
                 final_url = resp.geturl()
                 raw_html = resp.read().decode('utf-8', errors='ignore')
                 post_text = re.sub(r'<[^>]+>', ' ', raw_html)
+        except urllib.error.HTTPError as e_http:
+            http_status = e_http.code
+            print(f"[Urllib HTTP Error]: {e_http}")
         except Exception as e2:
             print(f"[Urllib Fetch Error]: {e2}")
 
     # 3. Retry with LINKEDIN_LI_AT ONLY if LinkedIn gated the post behind a login wall
-    if _is_linkedin_login_wall(final_url, post_text) and LINKEDIN_LI_AT:
-        print("[Engine] LinkedIn login wall hit; retrying with LINKEDIN_LI_AT cookie...")
+    if _is_private_or_blocked_post(final_url, post_text, http_status) and LINKEDIN_LI_AT:
+        print("[Engine] Private/login wall hit; retrying with LINKEDIN_LI_AT cookie...")
         try:
             auth_url, auth_text, auth_html, auth_imgs = _playwright_fetch(url, use_li_at=True)
-            if not _is_linkedin_login_wall(auth_url, auth_text) and len(auth_text) > len(post_text):
+            if not _is_private_or_blocked_post(auth_url, auth_text) and len(auth_text) > len(post_text):
                 final_url, post_text, raw_html = auth_url, auth_text, auth_html
+                http_status = 200
                 for im in auth_imgs:
                     if im not in candidate_imgs:
                         candidate_imgs.append(im)
@@ -403,9 +416,9 @@ def _fetch_web_post_detailed(url: str) -> tuple[str, list[str], str]:
         if em not in emails:
             emails.append(em)
 
-    # 5. Still login-walled with zero content?
-    if not emails and not candidate_imgs and _is_linkedin_login_wall(final_url, post_text):
-        block_reason = "linkedin_login_wall"
+    # 5. Still private/blocked/unreadable?
+    if not emails and not candidate_imgs and _is_private_or_blocked_post(final_url, post_text, http_status):
+        block_reason = "private_post"
 
     # 6. CRITICAL FALLBACK: If post text had NO email, OCR any flyer images attached to the post!
     if not emails and candidate_imgs:
@@ -482,16 +495,19 @@ def process_and_apply(input_source: str, is_image_path: bool = False, extra_text
             emails.append(e)
 
     if not emails:
-        if block_reason == "linkedin_login_wall":
+        if block_reason == "private_post":
             return {
                 "success": False,
+                "is_private": True,
                 "error": (
-                    "LinkedIn ne is post ko Login Wall ('Members Only') ke peeche lock kiya hua hai.\n"
-                    "👉 Kripya is post ka <b>Screenshot Photo</b> ya <b>Text copy</b> karke bhej dein — main turant email nikal kar apply kar dunga!"
+                    "🔒 <b>This post is private — please share screenshot!</b>\n\n"
+                    "Bot yeh post direct link se nahi dekh paa raha (Private / Login locked hai).\n"
+                    "👉 Bas iska <b>Screenshot (SS)</b> ya <b>Text copy</b> bhej dein — main turant apply kar dunga!"
                 )
             }
         return {
             "success": False,
+            "is_private": False,
             "error": "Post ya flyer photo me recruiter ki email nahi mili. Kripya check karein ya HR ki email sath me likh kar bhejein."
         }
 

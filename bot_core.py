@@ -200,6 +200,8 @@ WhatsApp Channel ke links browser me direct open nahi hote.
         res = process_and_apply(input_text, is_image_path=False)
         if res.get("success"):
             send_reply(chat_id, _format_success_reply(res, runner_footer), msg_id)
+        elif res.get("is_private"):
+            send_reply(chat_id, res.get("error"), msg_id)
         else:
             send_reply(chat_id, f"⚠️ <b>Notice:</b> {res.get('error')}", msg_id)
         return

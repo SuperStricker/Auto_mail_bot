@@ -14,9 +14,9 @@ if BASE_DIR not in sys.path:
 from ocr_engine import extract_emails
 from apply_engine import (
     parse_post_intelligence, extract_company_from_domain, sanitize_job_role,
-    _is_private_or_blocked_post, process_and_apply
+    _is_private_or_blocked_post, process_and_apply, _extract_html_meta_and_images
 )
-from email_sender import select_cv_for_location, create_email_body
+from email_sender import select_cv_for_location, create_email_body, detect_explicit_subject, clean_location
 from bot_core import _extract_image_file_id, _extract_image_items, handle_telegram_update, _format_failure_reply
 from on_demand_worker import parse_cli_or_env_payload
 
@@ -125,6 +125,85 @@ class TestIntelligenceAndRouting(unittest.TestCase):
         self.assertIn("Desktop Support Engineer", res["role"])
         self.assertIn("Noida", res["location"])
         mock_send.assert_called_once()
+
+    def test_l1_service_desk_and_headline_subject_matching(self):
+        # Regression: grkQ4F4f post ('| L1 SERVICE DESK SUPPORT' must never truncate at '1' into '| L')
+        post = """
+        📢 WE ARE HIRING! | L1 SERVICE DESK SUPPORT
+        We are looking for experienced professionals to join our Cloud & Infrastructure Services Team – India!
+        🔹 Position: L1 Service Desk Support
+        🔹 Experience: 2–4 Years
+        📩 Interested candidates: Please share your updated resume via DM,
+        or share your cv on anshukasingh423@gmail.com
+
+        17
+        6 Comments
+        Like
+        Comment
+        Share
+        Carmen Campos, MBA
+        Solid L1 spec.
+        """
+        meta = parse_post_intelligence(post)
+        self.assertEqual(meta["job_role"], "L1 Service Desk Support")
+        self.assertEqual(meta["location"], "India")
+        subj, _ = create_email_body(meta["job_role"], "anshukasingh423@gmail.com", "Hiring Team", meta["location"], post)
+        self.assertEqual(subj, "Application for L1 Service Desk Support (India)")
+
+    def test_labeled_position_beats_prose_and_headlines_fallback(self):
+        # Prose before Position: line must not override explicit Position
+        prose_first = """
+        We are looking for experienced professionals to join our Noida team!
+        Position: Service Ops Engineer
+        Send CV to hr@acme-tech.in
+        """
+        meta1 = parse_post_intelligence(prose_first)
+        self.assertEqual(meta1["job_role"], "Service Ops Engineer")
+
+        # No Position: label, prose wraps user's target headline
+        prose_only = "We're hiring a skilled Deskside Support Engineer to join our team in Noida. Mail hr@acme-tech.in"
+        meta2 = parse_post_intelligence(prose_only)
+        self.assertEqual(meta2["job_role"], "Deskside Support Engineer")
+
+        # Pure headline mention without Hiring prefix
+        plain_headline = "Immediate requirement for L1/L2 Desktop Support in Gurugram. Share CV at jobs@acme-tech.in"
+        meta3 = parse_post_intelligence(plain_headline)
+        self.assertIn(meta3["job_role"], ("L1/L2 Desktop Support", "L1/L2 Desktop Support Engineer"))
+
+        # Digit-containing roles preserved while DOM noise stripped
+        self.assertEqual(sanitize_job_role("L3 - IT Infrastructure & Support Engineer"), "L3 - IT Infrastructure & Support Engineer")
+        self.assertEqual(sanitize_job_role("M365 Lead 12 followers"), "M365 Lead")
+
+    def test_explicit_subject_variants_and_comment_stripping(self):
+        self.assertEqual(detect_explicit_subject("Email Subject: Application – Desktop Support Engineer"), "Application – Desktop Support Engineer")
+        self.assertEqual(detect_explicit_subject('Please mention "L1 Service Desk Support - Noida" in the subject line'), "L1 Service Desk Support - Noida")
+        self.assertEqual(detect_explicit_subject("Subject line as IT Executive - Noida"), "IT Executive - Noida")
+        # Generic placeholder instructions should not be treated as literal subjects
+        self.assertEqual(detect_explicit_subject("Subject: Your Name - Current Location"), "")
+
+        # Comments section should not hijack role or company
+        post_with_comment = """
+        Hiring : IT Systems Administrator / IT Operations
+
+        33
+        6 Comments
+        Like
+        Comment
+        Share
+        Srihari Chintaginjala SFDC
+        I have 6 years in Salesforce Architect. Email: hariit2027@gmail.com
+        """
+        meta = parse_post_intelligence(post_with_comment)
+        self.assertEqual(meta["job_role"], "IT Systems Administrator / IT Operations")
+
+        # LinkedIn comment mailto links (?trk=public_post_comment-text) must be ignored
+        html_with_comment_mailto = (
+            '<a href="mailto:hariit2027@gmail.com?trk=public_post_comment-text">hariit2027@gmail.com</a>'
+            '<a href="mailto:hr@forcecraver.com?trk=public_post_text">hr@forcecraver.com</a>'
+        )
+        _, html_emails, _ = _extract_html_meta_and_images(html_with_comment_mailto)
+        self.assertEqual(html_emails, ["hr@forcecraver.com"])
+        self.assertEqual(clean_location("Re mote I Shift"), "")
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])

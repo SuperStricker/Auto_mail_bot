@@ -8,6 +8,7 @@ import os
 import re
 import json
 import time
+import socket
 import html as html_lib
 import subprocess
 import urllib.request
@@ -26,13 +27,152 @@ from email_sender import (
 JUNK_ROLE_WORDS = {
     "alert", "hiring", "urgent", "hiring alert", "job alert", "urgent hiring",
     "immediate", "opening", "vacancy", "requirement", "opportunity", "we are hiring",
-    "looking for", "role", "position", "designation", "job", "update", "notice",
-    "location", "company", "null", "none"
+    "we're hiring", "looking for", "role", "position", "designation", "job",
+    "update", "notice", "location", "company", "null", "none", "now", "india",
+    "remote", "uae", "dubai", "ksa", "saudi arabia"
 }
+
+JUNK_ROLE_PHRASES = (
+    "our client", "multiple positions", "urgent basis", "immediate joiner",
+    "below role", "following role", "your resume", "check below", "please share",
+    "experienced professionals", "candidates with", "to join our", "to join the",
+    "join our team", "we are looking", "share your", "apply now"
+)
+
+ROLE_ACRONYMS = {
+    "IT", "L1", "L2", "L3", "AD", "M365", "O365", "EUC", "ITSM", "ITIL",
+    "CCTV", "LAN", "WAN", "NOC", "SOC", "IAM", "MDM", "SCCM", "VPN", "SLA",
+    "US", "UK", "UAE", "KSA", "AV"
+}
+LOWER_CONNECTORS = {"and", "or", "for", "of", "in", "at", "to"}
+
+# User's target headlines (aligned with Naukri Alart + CV) ordered most-specific first.
+# None => preserve exact matched headline text (cleanly formatted).
+USER_HEADLINE_PATTERNS = [
+    (r'\bl[1-3]\s*[-–/]?\s*it\s+infrastructure(?:\s*&\s*support)?\s*(?:engineer|lead|specialist)?\b', None),
+    (r'\bl1\s*/\s*l2\s+desktop\s+support(?:\s+(?:engineer|executive|technician))?\b', 'L1/L2 Desktop Support Engineer'),
+    (r'\bl[1-3]\s+service\s+desk(?:\s+(?:support|engineer|analyst|technician))?\b', None),
+    (r'\bl[1-3]\s+(?:it\s+)?helpdesk(?:\s+(?:support|engineer|analyst|technician))?\b', None),
+    (r'\bl[1-3]\s+(?:desktop|technical|it)\s+support(?:\s+(?:engineer|executive|specialist|technician|analyst))?\b', None),
+    (r'\bsystem\s+engineer\s+service\s+ops\b', 'System Engineer Service Ops'),
+    (r'\bservice\s+ops\s+engineer\b', 'Service Ops Engineer'),
+    (r'\bservice\s+delivery\s+manager\b', 'Service Delivery Manager'),
+    (r'\bservice\s+desk\s+manager\b', 'Service Desk Manager'),
+    (r'\bservice\s+desk\s+(?:engineer|analyst|specialist|support)\b', None),
+    (r'\bhelpdesk\s+support(?:\s+engineer)?\b|\bit\s+helpdesk(?:\s+(?:engineer|support|technician))?\b|\bhelp\s+desk\s+(?:engineer|analyst|support|technician)\b', None),
+    (r'\bdesktop\s+support\s+(?:engineer|executive|specialist|technician|lead)\b|\bdesktop\s+support\b', 'Desktop Support Engineer'),
+    (r'\bdeskside\s+support(?:\s+(?:engineer|analyst|specialist|technician))?\b', 'Deskside Support Engineer'),
+    (r'\btechnical\s+support\s+(?:engineer|executive|specialist|analyst)\b|\btech\s+support\s+engineer\b', 'Technical Support Engineer'),
+    (r'\bit\s+and\s+system\s+support(?:\s+(?:engineer|specialist))?\b', 'IT and System Support'),
+    (r'\bit\s+infrastructure(?:\s*&\s*support|\s*&\s*operations)?\s+(?:engineer|lead|specialist|administrator)\b', None),
+    (r'\bit\s+operations\s+lead\b', 'IT Operations Lead'),
+    (r'\bit\s+support\s+manager\b', 'IT Support Manager'),
+    (r'\bassistant\s+manager\s*[-–]?\s*it\b', 'Assistant Manager IT'),
+    (r'\bit\s+manager\b', 'IT Manager'),
+    (r'\bit\s+head\b', 'IT Head'),
+    (r'\bsenior\s+executive\s*[-–|/]?\s*it\b', 'Senior Executive IT'),
+    (r'\bit\s+executive\b', 'IT Executive'),
+    (r'\bsenior\s+system\s+engineer\b', 'Senior System Engineer'),
+    (r'\bit\s+systems?\s+administrator(?:\s*/\s*it\s+operations(?:\s+contractor)?)?\b', None),
+    (r'\bsystem\s+administrator\b|\bsystems?\s+admin(?:istrator)?\b', 'System Administrator'),
+    (r'\bsystem\s+support(?:\s+(?:engineer|specialist|analyst))?\b', 'System Support Engineer'),
+    (r'\bsystem\s+engineer\b', 'System Engineer'),
+    (r'\bmicrosoft\s*365\s+(?:engineer|administrator|lead|specialist)\b|\bm365\s+(?:lead|engineer|administrator)\b', None),
+    (r'\bend\s+user\s+computing(?:\s*\(euc\))?(?:\s+(?:engineer|specialist|lead))?\b|\beuc\s+(?:engineer|specialist|support)\b', 'End User Computing (EUC) Engineer'),
+    (r'\bwintel\s+(?:administrator|engineer|lead)\b', None),
+    (r'\bit\s+site\s+engineer\b|\bsite\s+engineer\b', 'IT Site Engineer'),
+    (r'\bit\s+support\s+technician\b', 'IT Support Technician'),
+    (r'\bit\s+technician\b', 'IT Technician'),
+    (r'\bit\s+specialist\b', 'IT Specialist'),
+    (r'\bsupport\s+analyst\b', 'Support Analyst'),
+    (r'\bit\s+analyst\b', 'IT Analyst'),
+    (r'\bsupport\s+engineer\b', 'Support Engineer'),
+    (r'\bnetwork\s+(?:admin(?:istrat(?:or|ion))?|engineer)\b', 'Network Engineer'),
+    (r'\bit\s+support\s+(?:engineer|executive|specialist)\b|\bit\s+support\b', None),
+]
 
 LINKEDIN_LOGIN_MARKERS = (
     "/signup/cold-join", "/uas/login", "/login", "/authwall", "join linkedin now"
 )
+
+def _format_role_title(title: str) -> str:
+    """Normalizes role casing and slash spacing while preserving acronyms (IT, L1-L3, L1/L2, M365)."""
+    s = re.sub(r'\s*/\s*', ' / ', (title or "").strip())
+    # Keep compact level slashes like L1/L2 or L2/L3 without spaces
+    s = re.sub(r'\b(L[1-3])\s*/\s*(L[1-3])\b', r'\1/\2', s, flags=re.IGNORECASE)
+    s = re.sub(r'\s{2,}', ' ', s)
+    if not s:
+        return ""
+    tokens = s.split(" ")
+    formatted = []
+    for idx, tok in enumerate(tokens):
+        if tok in {"/", "-", "–", "&"}:
+            formatted.append(tok)
+            continue
+        # Handle level/compact slashes like L1/L2 and hyphenated tokens like L1-L2
+        slash_parts = tok.split("/")
+        out_slash = []
+        for slp in slash_parts:
+            subparts = slp.split("-")
+            out_parts = []
+            for sp in subparts:
+                up = sp.upper()
+                low = sp.lower()
+                if up in ROLE_ACRONYMS:
+                    out_parts.append(up)
+                elif idx > 0 and low in LOWER_CONNECTORS and not tok.isupper():
+                    out_parts.append(low)
+                elif sp.isupper() or sp.islower():
+                    out_parts.append(sp.capitalize())
+                else:
+                    out_parts.append(sp)
+            out_slash.append("-".join(out_parts))
+        formatted.append("/".join(out_slash))
+    return " ".join(formatted)
+
+def _match_user_headline(text: str) -> str:
+    """Matches text against the user's configured IT support/sysadmin target headlines."""
+    if not text:
+        return ""
+    for pat, canonical in USER_HEADLINE_PATTERNS:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            if canonical:
+                return canonical
+            matched = re.sub(r'\s*[-–]\s*', ' - ', m.group(0).strip())
+            return _format_role_title(matched)
+    return ""
+
+def _is_prose_or_junk_role(text: str) -> bool:
+    """Detects generic recruiter prose/noise that should not become the email subject role."""
+    low = (text or "").strip().lower()
+    if not low or low in JUNK_ROLE_WORDS or len(low) < 3:
+        return True
+    if any(jp in low for jp in JUNK_ROLE_PHRASES):
+        return True
+    words = low.split()
+    if len(words) > 8:
+        return True
+    if re.search(r'\b(?:years?|yrs?|experience|exp|salary|ctc|lpa|aed)\b', low):
+        return True
+    return False
+
+def _strip_linkedin_comments(text: str) -> str:
+    """Removes LinkedIn comments & footer chrome so commenter bios/emails don't pollute post parsing."""
+    if not text:
+        return ""
+    markers = [
+        r'\n(?:\d+\s*\n)?(?:\d+\s+Comments?\s*\n)?Like\s*\nComment\s*\nShare\b',
+        r'\n\d+\s+Comments?\s*\nLike\b',
+        r'\nTo view or add a comment,\s*sign in\b',
+        r'\nSee more comments\b',
+    ]
+    cut_pos = len(text)
+    for pat in markers:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m and m.start() < cut_pos and m.start() > 40:
+            cut_pos = m.start()
+    return text[:cut_pos].strip()
 
 def extract_company_from_domain(email: str) -> str:
     """Extracts a clean company name from recruiter email domain if not generic."""
@@ -50,63 +190,59 @@ def extract_company_from_domain(email: str) -> str:
 def sanitize_job_role(raw_role: str, text: str = "") -> str:
     """Sanitizes extracted role, strips junk buzzwords, and ensures genuine IT designation."""
     clean = (raw_role or "").strip()
-    clean = re.sub(r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|we\'re\s+hiring|hiring|alert|urgent)\s*[:|–—-]?\s*', '', clean, flags=re.IGNORECASE).strip()
-    clean = re.sub(r'\s*\((?:ksa|india|uae|dubai|delhi|ncr|mumbai|pune|bangalore|[a-z\s]+)\)\s*$', '', clean, flags=re.IGNORECASE).strip()
-    clean = re.sub(r'\s*\d+\s*(?:content|pm|am|followers|kb|mb)?.*$', '', clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r'^[^\w(]+', '', clean).strip()
+    clean = re.sub(
+        r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|we\'re\s+hiring|hiring\s+for|hiring|alert|urgent|looking\s+for|position|role|designation|job\s+title|opening\s+for|vacancy\s+for)\s*[!:|–—\-\s]*',
+        '',
+        clean,
+        flags=re.IGNORECASE
+    ).strip()
+    clean = re.sub(r'^[^\w(]+|[^\w)]+$', '', clean).strip()
+    clean = re.sub(
+        r'\s*\((?:ksa|india|uae|dubai|abu\s+dhabi|qatar|doha|delhi(?:\s+ncr)?|ncr|noida|gurgaon|gurugram|mumbai|pune|bangalore|bengaluru|hyderabad|chennai|kolkata|remote|hybrid|onsite|on-site|wfh|urgent|immediate|contract|full[\s-]?time)\)\s*$',
+        '',
+        clean,
+        flags=re.IGNORECASE
+    ).strip()
+    # Strip LinkedIn DOM/UI noise suffixes ONLY when an explicit unit/noise word follows digits
+    clean = re.sub(r'\s*\b\d+\s+(?:content|comments?|reactions?|likes?|followers?|connections?|views?)\b.*$', '', clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r'\s*\b\d+(?::\d+)?\s*(?:pm|am|kb|mb|gb)\b.*$', '', clean, flags=re.IGNORECASE).strip()
+    clean = re.sub(r'\s*(?:\||–|—|\s-\s)\s*(?:location|experience|exp|salary|india|uae|dubai|remote|urgent).*$', '', clean, flags=re.IGNORECASE).strip()
 
     if not clean or clean.lower() in JUNK_ROLE_WORDS or len(clean) < 3:
         clean = ""
 
-    if "|" in clean or "–" in clean or "-" in clean or "—" in clean:
-        parts = [p.strip() for p in re.split(r'[:|–—-]', clean) if p.strip()]
-        # Preserve level prefixes like 'L3 - IT Infrastructure & Support Engineer'
-        if len(parts) >= 2 and re.fullmatch(r'L[1-3]', parts[0], re.IGNORECASE) and parts[1].lower() not in JUNK_ROLE_WORDS:
+    # Split compound banner lines on |, :, –, — or spaced ' - ' (never inside L1-L2 or End-User)
+    if clean and re.search(r'[:|–—]|\s-\s', clean):
+        parts = [p.strip(" -–—:|") for p in re.split(r'[:|–—]|\s+-\s+', clean) if p.strip(" -–—:|")]
+        if len(parts) >= 2 and re.fullmatch(r'L[1-3]', parts[0], re.IGNORECASE) and not _is_prose_or_junk_role(parts[1]):
             clean = f"{parts[0].upper()} - {parts[1]}"
         else:
+            picked = ""
             for p_strip in parts:
-                if p_strip.lower() not in JUNK_ROLE_WORDS and len(p_strip) >= 3:
-                    clean = p_strip
+                if not _is_prose_or_junk_role(p_strip) and len(p_strip) >= 3:
+                    picked = p_strip
                     break
+            clean = picked
+
+    # If extracted candidate looks like prose (e.g. "a skilled Desktop Support Engineer to join..."),
+    # extract the matching user headline from inside it or fall back to post headline matching.
+    if clean and _is_prose_or_junk_role(clean):
+        matched_in_cand = _match_user_headline(clean)
+        clean = matched_in_cand if matched_in_cand else ""
 
     if not clean or clean.lower() in JUNK_ROLE_WORDS:
-        known_roles = [
-            (r'\bl[1-3]\s*[-–]?\s*it\s+infrastructure(?:\s*&\s*support)?\s*(?:engineer|lead|specialist)?\b', 'IT Infrastructure & Support Engineer'),
-            (r'\bit\s+executive\b', 'IT Executive'),
-            (r'\bit\s+head\b', 'IT Head'),
-            (r'\bservice\s+delivery\s+manager\b', 'Service Delivery Manager'),
-            (r'\bit\s+manager\b', 'IT Manager'),
-            (r'\bit\s+lead\b|\binfrastructure\s+lead\b', 'IT Infrastructure Lead'),
-            (r'\bdesktop\s+support\s*(?:engineer|executive|lead)?\b', 'Desktop Support Engineer'),
-            (r'\bsystem\s+admin(?:istrat(?:or|ion))?\b', 'System Administrator'),
-            (r'\bnetwork\s+(?:admin(?:istrat(?:or|ion))?|engineer)\b', 'Network Engineer'),
-            (r'\bhelpdesk\s*(?:engineer|executive|analyst)?\b|\bservice\s+desk\s*(?:engineer|analyst)?\b', 'Service Desk Engineer'),
-            (r'\bm365\b|\bintune\b|\bcloud\s+support\b', 'M365 & Cloud Support Engineer'),
-            (r'\btechnical\s+support\s*(?:engineer|executive)?\b|\btech\s+support\b', 'Technical Support Engineer'),
-            (r'\bit\s+support\s*(?:engineer|executive|specialist)?\b', 'IT Support Specialist'),
-        ]
-        combined = f"{raw_role}\n{text}"
-        for pat, title in known_roles:
-            if re.search(pat, combined, re.IGNORECASE):
-                clean = title
-                break
+        clean = _match_user_headline(raw_role) or _match_user_headline(text)
 
     if not clean:
         clean = "IT Support & System Administrator"
 
-    if clean.isupper() and len(clean) > 3:
-        clean = " ".join([w.upper() if w.upper() in ["IT", "L1", "L2", "L3", "AD", "M365", "CCTV", "LAN", "WAN", "NOC", "SOC"] else w.capitalize() for w in clean.split()])
-
-    return clean
-
-JUNK_ROLE_PHRASES = (
-    "our client", "multiple positions", "urgent basis", "immediate joiner",
-    "below role", "following role", "your resume", "check below", "please share"
-)
+    return _format_role_title(clean)
 
 def _extract_headline_role(clean_text: str) -> str:
     """Extracts standalone job title lines near top of post/JD when no explicit 'Hiring:' prefix exists."""
     role_keywords = re.compile(
-        r'\b(?:engineer|administrator|admin|analyst|manager|executive|lead|specialist|architect|consultant|technician|coordinator|officer)\b',
+        r'\b(?:engineer|administrator|admin|analyst|manager|executive|lead|specialist|architect|consultant|technician|coordinator|officer|support)\b',
         re.IGNORECASE
     )
     domain_keywords = re.compile(
@@ -114,7 +250,7 @@ def _extract_headline_role(clean_text: str) -> str:
         re.IGNORECASE
     )
     skip_line = re.compile(
-        r'^(?:about|key\s+responsibilities|responsibilities|must\s+have|requirements|qualifications|skills|why\s+join|benefits|perks|send\s+|share\s+|apply\s+|http|www\.|•|\*|-|📍|💼|🚀|🕒|💰)',
+        r'^(?:about|key\s+responsibilities|responsibilities|must\s+have|requirements|required\s+skills|qualifications|skills|why\s+join|benefits|perks|send\s+|share\s+|apply\s+|interested|what\s+we|http|www\.|•|\*|-|📍|💼|🚀|🕒|💰)',
         re.IGNORECASE
     )
     for raw_line in clean_text.splitlines()[:30]:
@@ -127,23 +263,32 @@ def _extract_headline_role(clean_text: str) -> str:
         if not (2 <= len(words) <= 9):
             continue
         if role_keywords.search(line) and domain_keywords.search(line):
-            cleaned = sanitize_job_role(line, clean_text)
-            if cleaned and cleaned.lower() not in JUNK_ROLE_WORDS and not any(jp in cleaned.lower() for jp in JUNK_ROLE_PHRASES):
-                return cleaned
+            cand = _format_role_title(re.sub(r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|we\'re\s+hiring|hiring|alert|urgent)\s*[!:|–—\-\s]*', '', line, flags=re.IGNORECASE).strip())
+            if cand and not _is_prose_or_junk_role(cand):
+                return cand
     return ""
 
+def _freellm_available(host: str = "127.0.0.1", port: int = 31415, timeout: float = 0.25) -> bool:
+    """Fast local port probe so offline environments don't stall waiting for FreeLLM."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
 def parse_post_intelligence(text: str) -> dict:
-    """Analyzes job post text with FreeLLM if available, otherwise multi-strategy regex."""
-    clean_text = text.strip()[:6000]
+    """Analyzes job post text with FreeLLM if available, otherwise multi-tier regex + headline matcher."""
+    body_only = _strip_linkedin_comments(text)
+    clean_text = body_only.strip()[:6000]
     role, comp, loc, subj, recruiter = "", "", "", "", ""
 
-    if os.path.exists(ASK_FREELLM_TOOL):
+    if os.path.exists(ASK_FREELLM_TOOL) and _freellm_available():
         try:
             prompt = (
                 "Extract JSON with these exact keys from the following job post:\n"
-                "- job_role: Exact technical job title/designation hiring for (e.g. IT Executive, IT Head, Desktop Support Engineer, Service Delivery Manager, System Administrator, Network Engineer). Do NOT return words like 'Alert', 'Hiring', 'Urgent', or locations.\n"
+                "- job_role: Exact technical job title/designation hiring for (e.g. L1 Service Desk Support, IT Executive, Desktop Support Engineer, Service Delivery Manager, System Administrator). Use the exact role headline from the post if stated; never return words like 'Alert', 'Hiring', 'Urgent', or locations.\n"
                 "- company: Exact hiring company or consultancy name (null if unknown)\n"
-                "- location: Job city, state, or country (e.g. Saudi Arabia, Dubai UAE, Udaipur, Noida NCR) (null if unknown)\n"
+                "- location: Job city, state, or country (e.g. Saudi Arabia, Dubai UAE, Udaipur, Noida NCR, India) (null if unknown)\n"
                 "- explicit_subject: Exact subject line if recruiter explicitly requested one (e.g. 'Subject: ...'), else null\n"
                 "- recruiter_name: Recruiter or contact person name if given, else null\n"
                 "Return ONLY valid JSON.\n\n"
@@ -170,18 +315,45 @@ def parse_post_intelligence(text: str) -> dict:
         except Exception:
             pass
 
-    if not role or role.lower() in JUNK_ROLE_WORDS:
-        pre_cleaned = re.sub(r'^(?:hiring\s+alert|job\s+alert|urgent\s+hiring|we\s+are\s+hiring|hiring|alert|urgent)\s*[:|–—-]?\s*', '', clean_text, flags=re.IGNORECASE)
-        m_role = re.search(r'(?:WE ARE HIRING|WE\'RE HIRING|HIRING FOR|HIRING|URGENT HIRING|LOOKING FOR|ROLE|POSITION|OPENING FOR|DESIGNATION)\s*[!:|–—-]?\s*([^\n\r]{3,75})', pre_cleaned, re.IGNORECASE)
-        if m_role:
-            cand = m_role.group(1).strip()
-            if not any(jp in cand.lower() for jp in JUNK_ROLE_PHRASES):
+    # Tier 1: Explicit labeled role fields (Position:, Role:, Job Title:, Designation:)
+    if not role or _is_prose_or_junk_role(role):
+        for m_lbl in re.finditer(
+            r'(?:POSITION|ROLE|JOB\s+TITLE|DESIGNATION|OPENING\s+FOR|VACANCY\s+FOR)\s*[:–—-]+\s*([^\n\r]{3,75})',
+            clean_text,
+            re.IGNORECASE
+        ):
+            cand = m_lbl.group(1).strip()
+            if not _is_prose_or_junk_role(cand):
                 role = sanitize_job_role(cand, clean_text)
+                break
 
-    # Check top header lines (captures LinkedIn Job pages & clean headline posts)
-    if not role or role.lower() in JUNK_ROLE_WORDS:
+    # Tier 2: Explicit hiring banner headers (WE ARE HIRING | <Title>, HIRING - <Title>, Hiring : <Title>)
+    if not role or _is_prose_or_junk_role(role):
+        for m_hire in re.finditer(
+            r'(?:WE\s+ARE\s+HIRING|WE\'RE\s+HIRING|URGENT\s+HIRING|HIRING\s+FOR|HIRING)\s*[!:|–—\-\s]+([^\n\r]{3,75})',
+            clean_text,
+            re.IGNORECASE
+        ):
+            cand = m_hire.group(1).strip()
+            # Reject generic prose like "experienced professionals..." unless a clean headline sits inside
+            cand_clean = re.sub(r'^[!:|–—\-\s]+', '', cand).strip()
+            if _is_prose_or_junk_role(cand_clean):
+                matched = _match_user_headline(cand_clean)
+                if matched:
+                    role = matched
+                    break
+                continue
+            role = sanitize_job_role(cand_clean, clean_text)
+            break
+
+    # Tier 3: Headline line near top of post OR match user's configured target headlines in post body
+    if not role or _is_prose_or_junk_role(role):
         role = _extract_headline_role(clean_text)
 
+    if not role or _is_prose_or_junk_role(role):
+        role = _match_user_headline(clean_text)
+
+    # Tier 4: Final fallback
     if not role or role.lower() in JUNK_ROLE_WORDS:
         role = sanitize_job_role("", clean_text)
 
@@ -190,16 +362,18 @@ def parse_post_intelligence(text: str) -> dict:
         if m_comp and m_comp.group(1).lower() not in ("the role", "the job", "this role", "this opportunity", "us"):
             comp = m_comp.group(1).strip()
     if not comp:
-        m_comp = re.search(r'(?:Company|Organization)\s*[:|-]?\s*([A-Za-z0-9 &.,\'-]+)', clean_text, re.IGNORECASE)
+        m_comp = re.search(r'(?:Company|Organization)\s*[:|-]+\s*([A-Za-z0-9 &.,\'-]+)', clean_text, re.IGNORECASE)
         if m_comp:
-            comp = m_comp.group(1).strip().split("\n")[0]
-        else:
-            m_comp = re.search(r'([A-Z][A-Za-z0-9 &.,\'-]+(?:Services|Consultancy|Technologies|Solutions|Infotech|Infosystems|Pvt\.?\s*Ltd\.?|Private Limited|Corp|LLP|Inc|Group|Holdings))\s*(?:\n|is\s+hiring|is\s+looking|hiring|looking|·)', clean_text)
-            if m_comp:
-                comp = m_comp.group(1).strip()
+            cand_comp = m_comp.group(1).strip().split("\n")[0].strip()
+            if cand_comp.lower() not in ("contact", "hiring team", "recruiter", "unknown", "n/a", "na", "confidential", ""):
+                comp = cand_comp
+    if not comp:
+        m_comp = re.search(r'(?<!#)([A-Z][A-Za-z0-9 &.,\'-]+(?:Services|Consultancy|Technologies|Solutions|Infotech|Infosystems|Pvt\.?\s*Ltd\.?|Private Limited|Corp|LLP|Inc|Group|Holdings))\s*(?:\n|is\s+hiring|is\s+looking|hiring|looking|·|\|)', clean_text)
+        if m_comp:
+            comp = m_comp.group(1).strip()
 
     if not loc:
-        m_loc = re.search(r'(?:📍\s*)?(?:Location|Place)\s*[:|-]?\s*([A-Za-z0-9 ,()/.-]+)', clean_text, re.IGNORECASE)
+        m_loc = re.search(r'(?:📍\s*)?(?:Location|Place)\s*[:|-]+\s*([A-Za-z0-9 ,()/.-]+)', clean_text, re.IGNORECASE)
         if m_loc:
             loc = clean_location(m_loc.group(1).split("\n")[0])
         else:
@@ -209,7 +383,8 @@ def parse_post_intelligence(text: str) -> dict:
                 r'\bGreater\s+Noida\b', r'\bNew\s+Delhi\b', r'\bDelhi\s+NCR\b', r'\bNoida\b',
                 r'\bGurugram\b', r'\bGurgaon\b', r'\bFaridabad\b', r'\bGhaziabad\b', r'\bDelhi\b',
                 r'\bBengaluru\b', r'\bBangalore\b', r'\bHyderabad\b', r'\bPune\b', r'\bMumbai\b',
-                r'\bChennai\b', r'\bKolkata\b', r'\bJaipur\b', r'\bChandigarh\b', r'\bLondon\b', r'\bUK\b'
+                r'\bChennai\b', r'\bKolkata\b', r'\bJaipur\b', r'\bChandigarh\b', r'\bLondon\b', r'\bUK\b',
+                r'\bIndia\b'
             ]
             for pat in city_country_pats:
                 m_city = re.search(pat, clean_text, re.IGNORECASE)
@@ -258,8 +433,12 @@ def _extract_html_meta_and_images(raw_html: str) -> tuple[str, list[str], list[s
         if val and "500 million+ members" not in val and val not in meta_parts:
             meta_parts.append(val)
 
-    # 2. Mailto links
-    mailtos = re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,15})', unquoted_html, re.IGNORECASE)
+    # 2. Mailto links (skip LinkedIn comment mailtos like ?trk=public_post_comment-text)
+    mailtos = re.findall(
+        r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,15})(?![^"\'\s]*public_post_comment)',
+        unquoted_html,
+        re.IGNORECASE
+    )
     for m in mailtos:
         clean_m = m.lower().strip()
         if clean_m not in emails and not any(junk in clean_m for junk in ["example.com", "w3.org", "sentry.io", "licdn.com", "linkedin.com"]):
@@ -449,10 +628,20 @@ def _fetch_web_post_detailed(url: str) -> tuple[str, list[str], str]:
         except Exception as e_auth:
             print(f"[LinkedIn Auth Retry Notice]: {e_auth}")
 
-    # 4. Extract meta text, mailto emails, and HTML image candidates
-    meta_text, html_emails, html_imgs = _extract_html_meta_and_images(raw_html)
+    # 4. Extract meta text, mailto emails, and HTML image candidates (ignoring comment sections!)
+    raw_html_main = re.split(
+        r'(?:comments-comments-list|comment__list|comment__message|social-details-social-activity__comments|feed-shared-social-actions|public_post_comment)',
+        raw_html,
+        maxsplit=1,
+        flags=re.IGNORECASE
+    )[0] if raw_html else ""
+    meta_text, html_emails, html_imgs = _extract_html_meta_and_images(raw_html_main)
+    if not html_imgs and raw_html:
+        _, _, html_imgs = _extract_html_meta_and_images(raw_html)
+    post_body_only = _strip_linkedin_comments(post_text)
     if meta_text:
         post_text = f"{meta_text}\n{post_text}".strip()
+        post_body_only = f"{meta_text}\n{post_body_only}".strip()
     for em in html_emails:
         if em not in emails:
             emails.append(em)
@@ -460,7 +649,7 @@ def _fetch_web_post_detailed(url: str) -> tuple[str, list[str], str]:
         if im not in candidate_imgs:
             candidate_imgs.append(im)
 
-    for em in extract_emails(post_text):
+    for em in extract_emails(post_body_only):
         if em not in emails:
             emails.append(em)
 
@@ -468,19 +657,20 @@ def _fetch_web_post_detailed(url: str) -> tuple[str, list[str], str]:
     if not emails and not candidate_imgs and _is_private_or_blocked_post(final_url, post_text, http_status):
         block_reason = "private_post"
 
-    # 6. CRITICAL FALLBACK: If post text had NO email, OCR any flyer images attached to the post!
+    # 6. CRITICAL FALLBACK: If main post text had NO email, OCR any flyer images attached to the post!
     if not emails and candidate_imgs:
         ocr_text, img_emails = _ocr_candidate_images(candidate_imgs)
         if ocr_text:
             post_text = f"{post_text}\n{ocr_text}".strip()
+            post_body_only = f"{post_body_only}\n{ocr_text}".strip()
         for em in img_emails:
             if em not in emails:
                 emails.append(em)
-        for em in extract_emails(post_text):
+        for em in extract_emails(post_body_only):
             if em not in emails:
                 emails.append(em)
 
-    return post_text, emails, block_reason
+    return post_body_only if emails else post_text, emails, block_reason
 
 def fetch_web_post(url: str) -> tuple[str, list[str]]:
     """Backward-compatible wrapper returning (post_text, emails)."""

@@ -91,14 +91,22 @@ def detect_explicit_subject(text: str) -> str:
     if not text:
         return ""
     patterns = [
-        r'(?:mention|use|keep|with)?\s*subject\s*(?:line)?\s*(?:as|should be|is)?\s*[:\-–]\s*["\'`]?([^\n\r"\'`]+)["\'`]?',
-        r'subject\s*[:\-–]\s*["\'`]?([^\n\r"\'`]+)["\'`]?'
+        r'(?:mention|use|keep|with|write|put)?\s*\b(?:e-?mail\s+)?subject\s*(?:line)?\s*(?:as|should\s+be|is)?\s*[:\-–—]\s*["\'`“”]?([^\n\r"\'`“”]+)["\'`“”]?',
+        r'(?:mention|use|keep|with|write|put)?\s*\b(?:e-?mail\s+)?subject\s*(?:line)?\s+(?:as|should\s+be|is)\s+["\'`“”]?([^\n\r"\'`“”]+)["\'`“”]?',
+        r'(?:mention|use|keep|write|put)\s+["\'`“”]([^"\'`“”\n\r]{4,85})["\'`“”]\s+(?:in|as)\s+(?:the\s+)?(?:e-?mail\s+)?subject(?:\s+line)?'
     ]
+    generic_placeholders = (
+        "dear", "hi", "hello", "http", "mailto", "please", "we are",
+        "your name", "your role", "your current", "current location",
+        "notice period", "job title", "position name", "post name",
+        "mentioned", "above", "below", "role name", "designation"
+    )
     for p in patterns:
         m = re.search(p, text, re.IGNORECASE)
         if m:
-            sub = m.group(1).strip().rstrip('.,;')
-            if 4 <= len(sub) <= 85 and not sub.lower().startswith(('dear', 'hi', 'hello', 'http', 'mailto', 'please', 'we are')):
+            sub = m.group(1).strip().strip('"\'`“”').rstrip('.,;')
+            low = sub.lower()
+            if 4 <= len(sub) <= 85 and not low.startswith(generic_placeholders) and "your name" not in low:
                 return sub
     return ""
 
@@ -136,11 +144,18 @@ def clean_location(location: str) -> str:
         return ""
     loc = location.strip()
     loc = re.sub(r'^(?:location|place|📍)\s*[:|-]?\s*', '', loc, flags=re.IGNORECASE).strip()
+    # Strip trailing OCR pipe/label bleed (e.g. 'Remote I Shift', 'Noida | Exp')
+    loc = re.split(r'\s+(?:\||I)\s+(?:shift|experience|exp|salary|ctc|work\s*mode|notice|role)\b', loc, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    if re.fullmatch(r're\s*mote', loc, re.IGNORECASE):
+        loc = "Remote"
     if loc.startswith("(") and loc.endswith(")"):
         loc = loc[1:-1].strip()
     loc = loc.strip(":-—, ")
     if loc.lower() in JUNK_LOCATION_WORDS or len(loc) < 2:
         return ""
+    if loc.isupper() and loc not in {"UAE", "USA", "UK", "KSA", "NCR", "GCC"}:
+        acr = {"UAE", "USA", "UK", "KSA", "NCR", "GCC"}
+        loc = " ".join(w if w in acr else w.capitalize() for w in loc.split())
     return loc
 
 def create_email_body(job_role: str, recipient_email: str, company: str = "Hiring Team", location: str = "", post_text: str = "", cv_filename: str = "Shuaib Ali - CV.pdf") -> tuple[str, str]:

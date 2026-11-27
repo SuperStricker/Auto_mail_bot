@@ -55,8 +55,8 @@ export class MailTracker {
         if (rows.length > 0) {
           const row = rows[0];
           const now = Date.now();
-          // Ignore instant delivery-time security scanner hits (< 15s after send)
-          if (now - Number(row.sent_at) >= 15000) {
+          // Ignore delivery-time security scanners & Gmail Image Proxy pre-fetches (< 60s after send)
+          if (now - Number(row.sent_at) >= 60000) {
             const firstOpened = row.first_opened_at || now;
             this.ctx.storage.sql.exec(
               `UPDATE tracked_emails

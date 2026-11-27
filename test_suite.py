@@ -246,6 +246,27 @@ class TestMailTrackingAndHTML(unittest.TestCase):
         self.assertIn("/t?id=", parts["text/html"])
         self.assertTrue(mock_register.called)
 
+    @patch("sync_read_labels.fetch_opened_emails")
+    @patch("sync_read_labels.mark_emails_labeled")
+    @patch("sync_read_labels.imaplib.IMAP4_SSL")
+    def test_sync_read_labels_applies_utf7_label(self, mock_imap_cls, mock_mark, mock_fetch):
+        import sync_read_labels
+        mock_fetch.return_value = [
+            {"track_id": "test1234", "to_email": "hr@forcecraver.com", "subject": "Test Subj"}
+        ]
+        mock_mail = mock_imap_cls.return_value
+        mock_mail.search.return_value = ("OK", [b"10 20"])
+        mock_mail.fetch.return_value = ("OK", [(b"20", b"Subject: Test Subj\r\n\r\n")])
+        mock_mail.store.return_value = ("OK", [b"20 (X-GM-LABELS ...)"])
+
+        count = sync_read_labels.sync_read_labels()
+        self.assertEqual(count, 1)
+        self.assertTrue(mock_mail.store.called)
+        call_args = mock_mail.store.call_args[0]
+        self.assertEqual(call_args[0], b"20")
+        self.assertIn("&JxMnEw- Read", call_args[2])
+        mock_mark.assert_called_once_with(["test1234"])
+
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
     result = unittest.TextTestRunner(verbosity=2).run(suite)

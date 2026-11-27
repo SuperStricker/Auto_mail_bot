@@ -1,10 +1,10 @@
 name: On-Demand Job Auto-Mailer (Event-Triggered Only)
 
 on:
-  # Triggered ONLY when a Telegram message arrives via Webhook / Bridge
+  # Triggered when a Telegram message arrives or when an email open is detected
   # ZERO continuous polling. ZERO unnecessary runs. 100% Event-Driven.
   repository_dispatch:
-    types: [telegram_job]
+    types: [telegram_job, mail_opened]
 
   # Manual on-demand trigger via GitHub UI / CLI if ever needed
   workflow_dispatch:
@@ -58,10 +58,15 @@ jobs:
           JOB_TEXT_OR_URL: ${{ github.event.inputs.job_text_or_url }}
         run: |
           python test_suite.py
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$JOB_TEXT_OR_URL" ]; then
+          if [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ github.event.action }}" = "mail_opened" ]; then
+            python sync_read_labels.py
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$JOB_TEXT_OR_URL" ]; then
             python on_demand_worker.py
+            python sync_read_labels.py
           elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             python on_demand_worker.py
+            python sync_read_labels.py
           else
             python on_demand_worker.py --poll
+            python sync_read_labels.py
           fi

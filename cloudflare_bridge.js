@@ -65,6 +65,7 @@ export class MailTracker {
           // Works identically whether HR opens 2 minutes, 10 hours, or 30 days later.
           if (now - Number(row.sent_at) >= 60000) {
             const firstOpened = row.first_opened_at || now;
+            const isFirstOpen = !row.opened;
             this.ctx.storage.sql.exec(
               `UPDATE tracked_emails
                SET opened = 1, open_count = open_count + 1, first_opened_at = ?, last_opened_at = ?
@@ -73,6 +74,9 @@ export class MailTracker {
               now,
               id
             );
+            if (isFirstOpen && this.env?.GITHUB_TOKEN) {
+              this.ctx.waitUntil(dispatchToGitHub(this.env, { action: "sync_read_labels", track_id: id }, "mail_opened"));
+            }
           }
         }
       }
@@ -195,7 +199,7 @@ export class AlbumBuffer {
   }
 }
 
-async function dispatchToGitHub(env, payload) {
+async function dispatchToGitHub(env, payload, eventType = "telegram_job") {
   const token = env?.GITHUB_TOKEN || "";
   const repo = env?.GITHUB_REPO || "SuperStricker/Auto_mail_bot";
   if (!token) {
@@ -204,7 +208,7 @@ async function dispatchToGitHub(env, payload) {
 
   const githubUrl = `https://api.github.com/repos/${repo}/dispatches`;
   const dispatchBody = JSON.stringify({
-    event_type: "telegram_job",
+    event_type: eventType,
     client_payload: payload
   });
 

@@ -7,14 +7,19 @@ Sends tailored cold application emails with dynamic CV attachment via Gmail SMTP
 
 import os
 import re
+import html
+import json
 import time
+import uuid
 import smtplib
+import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 
 from config import (
-    GMAIL_USER, GMAIL_PASS, CV_INDIA_PATH, CV_GLOBAL_PATH
+    GMAIL_USER, GMAIL_PASS, CV_INDIA_PATH, CV_GLOBAL_PATH,
+    TRACKER_BASE_URL, TRACKER_SECRET
 )
 
 CV_SKILLS_MAP = {
@@ -200,9 +205,51 @@ Location: Noida / Delhi NCR, India (Available for Relocation / Remote)
 """
     return subject, body
 
+def create_html_body(body_text: str, track_id: str, tracker_base_url: str = TRACKER_BASE_URL) -> str:
+    """Converts plain email body into clean HTML and embeds a 1x1 open-tracking pixel."""
+    escaped = html.escape(body_text).replace("\n", "<br>\n")
+    pixel_html = ""
+    if tracker_base_url and track_id:
+        pixel_url = f"{tracker_base_url}/t?id={track_id}"
+        pixel_html = f'<img src="{pixel_url}" width="1" height="1" alt="" style="border:0;width:1px;height:1px;display:block;" />'
+    return (
+        '<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;line-height:1.5;">'
+        f"<div>{escaped}</div>"
+        f"{pixel_html}"
+        "</body></html>"
+    )
+
+def register_email_track(track_id: str, to_email: str, subject: str) -> None:
+    """Best-effort registration of sent email metadata with Cloudflare MailTracker."""
+    if not TRACKER_BASE_URL or not track_id:
+        return
+    try:
+        payload = json.dumps({
+            "track_id": track_id,
+            "to_email": to_email,
+            "subject": subject,
+            "sent_at": int(time.time() * 1000)
+        }).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "AutoMailBot/1.0"
+        }
+        if TRACKER_SECRET:
+            headers["X-Tracker-Secret"] = TRACKER_SECRET
+        req = urllib.request.Request(
+            f"{TRACKER_BASE_URL}/track/register",
+            data=payload,
+            headers=headers,
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception:
+        pass
+
 def send_cold_email(to_email: str, job_role: str, company: str = "Hiring Team", location: str = "", post_text: str = "") -> tuple[bool, str, str, bool]:
     """
-    Sends cold email via Gmail SMTP with dynamically selected CV.
+    Sends cold email via Gmail SMTP with dynamically selected CV and open-tracking pixel.
     Returns: (success, message, cv_filename, is_international)
     """
     cv_path, cv_filename, is_intl = select_cv_for_location(location, post_text)
@@ -211,12 +258,18 @@ def send_cold_email(to_email: str, job_role: str, company: str = "Hiring Team", 
         return False, f"CV file not found at: {cv_path}", cv_filename, is_intl
 
     subject, body = create_email_body(job_role, to_email, company, location, post_text, cv_filename)
+    track_id = uuid.uuid4().hex[:16]
+    html_body = create_html_body(body, track_id, TRACKER_BASE_URL)
 
-    msg = MIMEMultipart()
+    msg = MIMEMultipart("mixed")
     msg['From'] = f"Shuaib Ali <{GMAIL_USER}>"
     msg['To'] = to_email
     msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
+
+    alt_part = MIMEMultipart("alternative")
+    alt_part.attach(MIMEText(body, 'plain', 'utf-8'))
+    alt_part.attach(MIMEText(html_body, 'html', 'utf-8'))
+    msg.attach(alt_part)
 
     try:
         with open(cv_path, 'rb') as f:
@@ -234,6 +287,7 @@ def send_cold_email(to_email: str, job_role: str, company: str = "Hiring Team", 
             with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
                 server.login(GMAIL_USER, GMAIL_PASS)
                 server.sendmail(GMAIL_USER, to_email, msg.as_string())
+            register_email_track(track_id, to_email, subject)
             return True, "Email sent successfully", cv_filename, is_intl
         except smtplib.SMTPAuthenticationError as e:
             return False, f"SMTP Authentication Failed (check App Password): {e}", cv_filename, is_intl

@@ -1,3 +1,111 @@
+// 1x1 transparent GIF (43 bytes)
+const TRANSPARENT_GIF = new Uint8Array([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00,
+  0x80, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x21,
+  0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00,
+  0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44,
+  0x01, 0x00, 0x3b
+]);
+
+export class MailTracker {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS tracked_emails (
+        track_id TEXT PRIMARY KEY,
+        to_email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        sent_at INTEGER NOT NULL,
+        opened INTEGER DEFAULT 0,
+        open_count INTEGER DEFAULT 0,
+        first_opened_at INTEGER,
+        last_opened_at INTEGER,
+        labeled INTEGER DEFAULT 0
+      )
+    `);
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/register" && request.method === "POST") {
+      const { track_id, to_email, subject, sent_at } = await request.json();
+      if (!track_id || !to_email) {
+        return new Response("Missing track_id or to_email", { status: 400 });
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT OR REPLACE INTO tracked_emails (track_id, to_email, subject, sent_at, opened, open_count, labeled)
+         VALUES (?, ?, ?, ?, 0, 0, 0)`,
+        String(track_id),
+        String(to_email),
+        String(subject || ""),
+        Number(sent_at || Date.now())
+      );
+      return Response.json({ ok: true, track_id });
+    }
+
+    if (url.pathname === "/hit" && request.method === "GET") {
+      const id = url.searchParams.get("id") || "";
+      if (id) {
+        const rows = [...this.ctx.storage.sql.exec(
+          `SELECT sent_at, opened, open_count, first_opened_at FROM tracked_emails WHERE track_id = ?`,
+          id
+        )];
+        if (rows.length > 0) {
+          const row = rows[0];
+          const now = Date.now();
+          // Ignore instant delivery-time security scanner hits (< 15s after send)
+          if (now - Number(row.sent_at) >= 15000) {
+            const firstOpened = row.first_opened_at || now;
+            this.ctx.storage.sql.exec(
+              `UPDATE tracked_emails
+               SET opened = 1, open_count = open_count + 1, first_opened_at = ?, last_opened_at = ?
+               WHERE track_id = ?`,
+              firstOpened,
+              now,
+              id
+            );
+          }
+        }
+      }
+      return new Response(TRANSPARENT_GIF, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/gif",
+          "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0"
+        }
+      });
+    }
+
+    if (url.pathname === "/opened" && request.method === "GET") {
+      const rows = [...this.ctx.storage.sql.exec(
+        `SELECT track_id, to_email, subject, sent_at, first_opened_at, open_count
+         FROM tracked_emails WHERE opened = 1 AND labeled = 0
+         ORDER BY first_opened_at DESC LIMIT 100`
+      )];
+      return Response.json({ ok: true, items: rows });
+    }
+
+    if (url.pathname === "/mark-labeled" && request.method === "POST") {
+      const { track_ids } = await request.json();
+      if (Array.isArray(track_ids)) {
+        for (const tid of track_ids) {
+          this.ctx.storage.sql.exec(
+            `UPDATE tracked_emails SET labeled = 1 WHERE track_id = ?`,
+            String(tid)
+          );
+        }
+      }
+      return Response.json({ ok: true });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+}
+
 export class AlbumBuffer {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -115,8 +223,32 @@ function isImageDocument(doc) {
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+
+    // Email Open Tracking Pixel: GET /t?id=<track_id>
+    if (request.method === "GET" && url.pathname === "/t" && env?.MAIL_TRACKER) {
+      const tracker = env.MAIL_TRACKER.get(env.MAIL_TRACKER.idFromName("global"));
+      return tracker.fetch(`https://mail-tracker/hit${url.search}`);
+    }
+
+    // Tracker API endpoints (protected by TRACKER_SECRET if configured)
+    if (url.pathname.startsWith("/track/") && env?.MAIL_TRACKER) {
+      const expected = env?.TRACKER_SECRET || "";
+      const provided = request.headers.get("X-Tracker-Secret") || url.searchParams.get("secret") || "";
+      if (expected && provided !== expected) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const tracker = env.MAIL_TRACKER.get(env.MAIL_TRACKER.idFromName("global"));
+      const subPath = url.pathname.replace("/track", "");
+      return tracker.fetch(new Request(`https://mail-tracker${subPath}${url.search}`, {
+        method: request.method,
+        headers: request.headers,
+        body: request.method === "POST" ? await request.text() : undefined
+      }));
+    }
+
     if (request.method !== "POST") {
-      return new Response("🚀 Auto Mail Bot Telegram-to-GitHub Bridge (Album-Aware) is LIVE & ACTIVE!", {
+      return new Response("🚀 Auto Mail Bot Telegram-to-GitHub Bridge (Album-Aware + MailTracker) is LIVE & ACTIVE!", {
         status: 200,
         headers: { "Content-Type": "text/plain; charset=utf-8" }
       });

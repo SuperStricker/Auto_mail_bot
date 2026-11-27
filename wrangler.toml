@@ -9,6 +9,14 @@ GITHUB_REPO = "SuperStricker/Auto_mail_bot"
 name = "ALBUM_BUFFER"
 class_name = "AlbumBuffer"
 
+[[durable_objects.bindings]]
+name = "MAIL_TRACKER"
+class_name = "MailTracker"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AlbumBuffer"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MailTracker"]

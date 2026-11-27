@@ -40,3 +40,6 @@ LINKEDIN_LI_AT = os.environ.get("LINKEDIN_LI_AT", "").strip()
 
 API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}"
+
+TRACKER_BASE_URL = os.environ.get("TRACKER_BASE_URL", "https://auto-mail-bot-bridge.uto-mail-bot.workers.dev").rstrip("/")
+TRACKER_SECRET = os.environ.get("TRACKER_SECRET", "").strip()

@@ -34,19 +34,26 @@ export class MailTracker {
       if (!track_id || !to_email) {
         return new Response("Missing track_id or to_email", { status: 400 });
       }
+      const now = Date.now();
+      const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+      this.ctx.storage.sql.exec(
+        `DELETE FROM tracked_emails WHERE sent_at < ?`,
+        now - ninetyDaysMs
+      );
       this.ctx.storage.sql.exec(
         `INSERT OR REPLACE INTO tracked_emails (track_id, to_email, subject, sent_at, opened, open_count, labeled)
          VALUES (?, ?, ?, ?, 0, 0, 0)`,
         String(track_id),
         String(to_email),
         String(subject || ""),
-        Number(sent_at || Date.now())
+        Number(sent_at || now)
       );
       return Response.json({ ok: true, track_id });
     }
 
     if (url.pathname === "/hit" && request.method === "GET") {
       const id = url.searchParams.get("id") || "";
+      const now = Date.now();
       if (id) {
         const rows = [...this.ctx.storage.sql.exec(
           `SELECT sent_at, opened, open_count, first_opened_at FROM tracked_emails WHERE track_id = ?`,
@@ -54,8 +61,8 @@ export class MailTracker {
         )];
         if (rows.length > 0) {
           const row = rows[0];
-          const now = Date.now();
-          // Ignore delivery-time security scanners & Gmail Image Proxy pre-fetches (< 60s after send)
+          // Ignore delivery-time security scanners & Gmail Image Proxy pre-fetches (< 60s after send).
+          // Works identically whether HR opens 2 minutes, 10 hours, or 30 days later.
           if (now - Number(row.sent_at) >= 60000) {
             const firstOpened = row.first_opened_at || now;
             this.ctx.storage.sql.exec(
@@ -73,11 +80,25 @@ export class MailTracker {
         status: 200,
         headers: {
           "Content-Type": "image/gif",
-          "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0",
+          "CDN-Cache-Control": "no-store",
+          "Surrogate-Control": "no-store",
           "Pragma": "no-cache",
-          "Expires": "0"
+          "Expires": "0",
+          "ETag": `"${now}"`
         }
       });
+    }
+
+    if (url.pathname === "/status" && request.method === "GET") {
+      const [counts] = [...this.ctx.storage.sql.exec(
+        `SELECT
+           COUNT(*) AS total_tracked,
+           SUM(CASE WHEN opened = 1 THEN 1 ELSE 0 END) AS total_opened,
+           SUM(CASE WHEN opened = 1 AND labeled = 0 THEN 1 ELSE 0 END) AS opened_pending_label
+         FROM tracked_emails`
+      )];
+      return Response.json({ ok: true, stats: counts });
     }
 
     if (url.pathname === "/opened" && request.method === "GET") {

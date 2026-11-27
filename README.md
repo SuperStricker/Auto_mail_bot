@@ -1,71 +1,46 @@
-# 🚀 Auto Mail Bot (Universal Job Application & Cold Mailer)
+# 🚀 Auto Mail Bot (Universal Cloud Job Mailer + Free Gmail `✓✓ Read` Tracker)
 
-AI-powered on-demand cold email applicant for **Shuaib Ali**.  
-Automatically extracts recruiter emails from LinkedIn links, photos, flyers, or text, matches real CV skills, and sends personalized cold emails with the appropriate CV.
+100% **Serverless, Event-Driven, Zero-Laptop-Dependency** cold email job application bot powered by **Telegram + Cloudflare Workers + GitHub Actions + Gmail**, with a built-in **free email open tracker** that applies a green **`✓✓ Read`** label directly inside your Gmail Sent folder.
 
----
-
-## 🌟 100% Cloud Serverless Architecture (Zero Laptop Dependency)
-
-1. **GitHub Actions Cloud Poller (Production Default):**
-   - Workflow: `.github/workflows/on_demand_mailer.yml`
-   - Automatically polls Telegram queue on a 10-minute cron (`*/10 * * * *`).
-   - Also accepts instant push events via `repository_dispatch` (`telegram_job`).
-   - Executes in 25-40 seconds on Ubuntu runners, dispatches Gmail SMTP applications, attaches targeted CV, and exits with 0 persistent resources.
-   - **Zero laptop battery, CPU, or uptime dependency.** Works 24/7 with laptop powered off.
-
-2. **Local Fallback Mode:**
-   - Double click `START_LOCAL.bat` to run locally on your desktop if ever desired.
+> 🤖 **Using an AI IDE (Antigravity / Claude / Cursor) to clone this for someone else?**  
+> Just ask the AI to read [AI_SETUP_BLUEPRINT.md](./AI_SETUP_BLUEPRINT.md) and [CLAUDE.md](./CLAUDE.md) — it contains the complete architecture, credential checklist, and 0-to-live deployment runbook.
 
 ---
 
-## 📂 Project Structure
+## 🌟 How It Works
 
-```
-Auto_mail_bot/
-├── config.py              # Environment variables & constants
-├── ocr_engine.py          # Windows OCR + PIL contrast enhancement
-├── email_sender.py        # Gmail SMTP + dynamic skills & dual CV router
-├── apply_engine.py        # Universal parser for link, photo & text
-├── bot_core.py            # Core Telegram message & card formatting
-├── webhook_server.py      # On-demand Flask webhook server for cloud
-├── run_local.py           # Local polling runner for Desktop
-├── START_LOCAL.bat        # 1-Click desktop launcher
-├── run_silent.vbs         # Silent background runner for Windows Task Scheduler
-├── Shuaib Ali - CV.pdf    # Domestic CV (India roles)
-├── Shuaib_Ali.pdf         # International CV (Dubai, UAE, Saudi, Europe, etc.)
-├── requirements.txt       # Python dependencies
-└── Procfile / render.yaml # 1-Click cloud deployment on Render
-```
+1. **Send a Job to Telegram:** Forward a LinkedIn post link, paste job text, or send 1–N flyer screenshots (albums automatically merge into 1 job).
+2. **Cloudflare Worker Bridge (`cloudflare_bridge.js`):** Buffers photo albums (`AlbumBuffer` Durable Object) and dispatches instantly to GitHub Actions (`repository_dispatch`).
+3. **GitHub Actions Runner (`on_demand_worker.py`):**
+   - Extracts HR email, job role, company, location, and explicit subject lines using Playwright + Tesseract OCR.
+   - Auto-selects Domestic vs International CV PDF (`email_sender.py`).
+   - Sends clean `Plain + HTML` email with CV attached and a tiny `1x1` tracking pixel registered in Cloudflare `MailTracker`.
+   - Replies on Telegram with status and shuts down cleanly (0 always-on servers).
+4. **Gmail `✓✓ Read` Label (`gmail_read_labeler.gs`):**
+   - Ignores delivery-time security scanners & Gmail proxy pre-fetches (`< 60s`), and sends strict `no-store, max-age=0` headers so HR opens **2 minutes, 10 hours, or 30 days later** are still detected accurately.
+   - Google Apps Script checks opened emails every 5 minutes and automatically applies the **`✓✓ Read`** label in your Gmail Sent folder (zero Telegram notification spam).
 
 ---
 
-## 🎯 Dual CV Auto-Routing
+## 📂 Key Files
 
-* 🇮🇳 **Domestic (India Roles):** Automatically attaches `Shuaib Ali - CV.pdf`.
-* 🌍 **International (UAE, Saudi, Dubai, GCC, Europe, US, UK, etc.):** Automatically attaches `Shuaib_Ali.pdf`.
+- [AI_SETUP_BLUEPRINT.md](./AI_SETUP_BLUEPRINT.md) — Complete architecture & 0-to-live setup guide for new users & AI assistants
+- [CLAUDE.md](./CLAUDE.md) — Quick context file for AI coding IDEs
+- [cloudflare_bridge.js](./cloudflare_bridge.js) & [wrangler.toml](./wrangler.toml) — Cloudflare Worker (`AlbumBuffer` + `MailTracker`)
+- [email_sender.py](./email_sender.py) & [config.py](./config.py) — Dual CV router, HTML + pixel email builder, Gmail SMTP sender
+- [gmail_read_labeler.gs](./gmail_read_labeler.gs) — Free Google Apps Script for Gmail `✓✓ Read` labels
+- [apply_engine.py](./apply_engine.py) & [ocr_engine.py](./ocr_engine.py) — Link/OCR/text intelligence engine
+- [bot_core.py](./bot_core.py) & [on_demand_worker.py](./on_demand_worker.py) — Telegram & GitHub Actions runner
+- [test_suite.py](./test_suite.py) — Unit tests
+- [`.github/workflows/on_demand_mailer.yml`](./.github/workflows/on_demand_mailer.yml) — Cloud runner workflow
 
 ---
 
-## 🚀 How to Run Locally
+## ⚡ Quick Setup for a New User
 
-Double-click `START_LOCAL.bat` on your Desktop.  
-Open Telegram, message `@Shuaib_Job_Mailer_bot`, and send any job link or flyer image!
-
----
-
-## ☁️ How to Deploy on Render (Cloud Free 24/7)
-
-1. Push this folder to your new GitHub repository.
-2. Sign in to [Render.com](https://render.com) and click **New +** -> **Web Service**.
-3. Select your repository.
-4. Set Environment Variables:
-   - `GMAIL_USER`
-   - `GMAIL_APP_PASSWORD`
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
-5. Click **Deploy**.
-6. Set Telegram Webhook (run once in browser):
-   ```
-   https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=<YOUR_RENDER_URL>/webhook/<YOUR_BOT_TOKEN>
-   ```
+See full step-by-step instructions in [AI_SETUP_BLUEPRINT.md](./AI_SETUP_BLUEPRINT.md):
+1. Copy/clone repo and replace CV PDFs + update `config.py` / `.env.example` values.
+2. Deploy Cloudflare Worker (`npx wrangler deploy` + `npx wrangler secret put GITHUB_TOKEN`).
+3. Push to GitHub and configure GitHub Actions Secrets (`GMAIL_USER`, `GMAIL_APP_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `LINKEDIN_LI_AT`).
+4. Set Telegram webhook to your Cloudflare Worker URL.
+5. Paste [gmail_read_labeler.gs](./gmail_read_labeler.gs) into [script.google.com](https://script.google.com) under the user's Gmail and run `setupTrigger()` once.

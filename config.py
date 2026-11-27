@@ -10,9 +10,14 @@ TEMP_DIR = os.path.join(BASE_DIR, "temp_images")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 SENT_HISTORY_FILE = os.path.join(BASE_DIR, "sent_history.json")
 
-CV_INDIA_PATH = os.path.join(BASE_DIR, "Shuaib Ali - CV.pdf")
-CV_GLOBAL_PATH = os.path.join(BASE_DIR, "Shuaib_Ali.pdf")
+CV_INDIA_PATH = os.path.join(BASE_DIR, os.environ.get("CV_INDIA_FILENAME", "Shuaib Ali - CV.pdf"))
+CV_GLOBAL_PATH = os.path.join(BASE_DIR, os.environ.get("CV_GLOBAL_FILENAME", "Shuaib_Ali.pdf"))
 ASK_FREELLM_TOOL = r"C:\Users\IT\Desktop\AGY-Backup\tools\ask_freellm.py"
+
+USER_NAME = os.environ.get("USER_NAME", "Shuaib Ali")
+USER_PHONE = os.environ.get("USER_PHONE", "+91 9311534763")
+USER_LINKEDIN = os.environ.get("USER_LINKEDIN", "https://www.linkedin.com/in/shuaib-ali-ba0977195")
+USER_LOCATION = os.environ.get("USER_LOCATION", "Noida / Delhi NCR, India (Available for Relocation / Remote)")
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)

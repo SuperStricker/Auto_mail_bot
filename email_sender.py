@@ -19,7 +19,8 @@ from email.mime.application import MIMEApplication
 
 from config import (
     GMAIL_USER, GMAIL_PASS, CV_INDIA_PATH, CV_GLOBAL_PATH,
-    TRACKER_BASE_URL, TRACKER_SECRET
+    TRACKER_BASE_URL, TRACKER_SECRET,
+    USER_NAME, USER_PHONE, USER_LINKEDIN, USER_LOCATION
 )
 
 CV_SKILLS_MAP = {
@@ -198,10 +199,10 @@ Please find my updated CV attached below.
 
 Warm regards,
 
-Shuaib Ali
-Phone: +91 9311534763
-LinkedIn: https://www.linkedin.com/in/shuaib-ali-ba0977195
-Location: Noida / Delhi NCR, India (Available for Relocation / Remote)
+{USER_NAME}
+Phone: {USER_PHONE}
+LinkedIn: {USER_LINKEDIN}
+Location: {USER_LOCATION}
 """
     return subject, body
 
@@ -262,7 +263,7 @@ def send_cold_email(to_email: str, job_role: str, company: str = "Hiring Team", 
     html_body = create_html_body(body, track_id, TRACKER_BASE_URL)
 
     msg = MIMEMultipart("mixed")
-    msg['From'] = f"Shuaib Ali <{GMAIL_USER}>"
+    msg['From'] = f"{USER_NAME} <{GMAIL_USER}>"
     msg['To'] = to_email
     msg['Subject'] = subject
 

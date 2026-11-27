@@ -6,6 +6,7 @@ Covers universal email extraction, OCR healing, metadata parsing, CV selection, 
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
@@ -204,6 +205,46 @@ class TestIntelligenceAndRouting(unittest.TestCase):
         _, html_emails, _ = _extract_html_meta_and_images(html_with_comment_mailto)
         self.assertEqual(html_emails, ["hr@forcecraver.com"])
         self.assertEqual(clean_location("Re mote I Shift"), "")
+
+
+class TestMailTrackingAndHTML(unittest.TestCase):
+    def test_html_body_embeds_pixel_and_escapes_text(self):
+        from email_sender import create_html_body
+        html_out = create_html_body(
+            "Hello <HR>,\nLine 2",
+            track_id="abc123def4567890",
+            tracker_base_url="https://example.workers.dev"
+        )
+        self.assertIn("Hello &lt;HR&gt;,<br>", html_out)
+        self.assertIn('src="https://example.workers.dev/t?id=abc123def4567890"', html_out)
+        self.assertIn('width="1" height="1"', html_out)
+
+    @patch("email_sender.register_email_track")
+    @patch("email_sender.smtplib.SMTP_SSL")
+    def test_send_cold_email_attaches_html_pixel_and_registers_track(self, mock_smtp_cls, mock_register):
+        from email_sender import send_cold_email
+        mock_server = mock_smtp_cls.return_value.__enter__.return_value
+
+        ok, msg, cv_name, is_intl = send_cold_email(
+            "hr@example.com",
+            "IT Support Engineer",
+            company="Acme Corp",
+            location="Noida, India",
+            post_text="Hiring IT Support Engineer in Noida"
+        )
+        self.assertTrue(ok, msg)
+        self.assertEqual(cv_name, "Shuaib Ali - CV.pdf")
+        self.assertFalse(is_intl)
+        self.assertTrue(mock_server.sendmail.called)
+        raw_mime = mock_server.sendmail.call_args[0][2]
+        import email as email_lib
+        parsed = email_lib.message_from_string(raw_mime)
+        parts = {p.get_content_type(): p.get_payload(decode=True).decode("utf-8", errors="ignore")
+                 for p in parsed.walk() if p.get_content_type() in ("text/plain", "text/html")}
+        self.assertIn("text/plain", parts)
+        self.assertIn("text/html", parts)
+        self.assertIn("/t?id=", parts["text/html"])
+        self.assertTrue(mock_register.called)
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
